@@ -95,6 +95,24 @@ pip install -r requirements.txt
 > [!WARNING]
 > **JPEG EXIF 段硬硬限 64KB**。大 workflow + prompt JSON 经常超量，导致 metadata 静默截断。SaveImagePlus 检测到超量时会**自动降级到 `prompt_only`**，但仍建议**存档优先用 PNG 或 lossless WebP**。
 
+### 📝 SaveTextPlus（菜单：ZSimple-Nodes/text）
+
+**用途**：保存任意文本到 `.txt` / `.md` / `.json` / `.csv`。与原生 `SaveText` 相比，字段单一职责（filename_prefix / subfolder_template / padding），并暴露 `workflow_json` 输出。
+
+**输入**（7 个）：
+- `text`：STRING（必填，多行）
+- `extra_texts`：STRING（可选，多行，追加在 text 之后）
+- `filename_prefix`：默认 `"ComfyUI"`
+- `subfolder_template`：默认 `"%date:yyyy-MM-dd%"`，独立子目录
+- `filename_number_padding`：INT 1-9，默认 5
+- `format`：`txt` / `md` / `json` / `csv`，默认 `txt`
+- `embed_json_keys`：`none` / `pretty`，默认 `pretty`（仅 format=json 时生效）
+
+**输出**（3 个）：
+- `path`：STRING（保存的文件完整路径）
+- `byte_count`：INT（写入字节数）
+- `workflow_json`：STRING（自动从 `extra_pnginfo` 导出 API workflow JSON）
+
 > [!NOTE]
 > **JPEG XL** (`jxl`) 需要可选依赖 `pillow-jxl-plugin`：
 > ```bash
