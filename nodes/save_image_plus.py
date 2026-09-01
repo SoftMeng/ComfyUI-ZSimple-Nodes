@@ -80,8 +80,10 @@ class SaveImagePlus(io.ComfyNode):
                 io.Int.Input(
                     "seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF
                 ),
-                io.Hidden.Input("prompt"),
-                io.Hidden.Input("extra_pnginfo"),
+            ],
+            hidden=[
+                io.Hidden.prompt,
+                io.Hidden.extra_pnginfo,
             ],
             outputs=[
                 io.Image.Output("images"),

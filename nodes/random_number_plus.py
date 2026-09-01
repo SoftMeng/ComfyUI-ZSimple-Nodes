@@ -28,7 +28,7 @@ class RandomNumberPlus(io.ComfyNode):
                 io.Int.Output("int_out"),
                 io.Float.Output("float_out"),
                 io.String.Output("string_out"),
-                io.Number.Output("number_out"),
+                io.Int.Output("number_out"),
                 io.Int.Output("next_int"),
                 io.Float.Output("next_float"),
             ],

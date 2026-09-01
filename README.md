@@ -58,7 +58,7 @@ pip install -r requirements.txt
 
 | 特性 | 说明 |
 |---|---|
-| 多格式输出 | INT / FLOAT / STRING / NUMBER（复合类型） |
+| 多格式输出 | INT / FLOAT / STRING（自动转 INT/Float） |
 | 当前 + 下一值 | 同时输出 `seed` 和 `seed + 1` |
 | 生成后控制 | `randomize` / `increment` / `decrement` / `fixed` —— 由 ComfyUI 前端 widget 处理 |
 | 零依赖 | 仅依赖 ComfyUI V3 API |
