@@ -19,7 +19,13 @@ import json
 from datetime import datetime
 
 import numpy as np
-from PIL import ExifTags, Image, PngInfo
+from PIL import ExifTags, Image
+try:
+    # Pillow < 11
+    from PIL import PngInfo
+except ImportError:
+    # Pillow >= 11: PngInfo moved to PIL.PngImagePlugin
+    from PIL.PngImagePlugin import PngInfo
 
 from comfy_api.latest import io
 
