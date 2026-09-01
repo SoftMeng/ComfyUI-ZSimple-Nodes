@@ -17,6 +17,7 @@ If the plugin is missing and format=jxl is selected, the node raises a clear err
 
 import json
 import os
+import re
 from datetime import datetime
 
 import numpy as np
@@ -96,7 +97,8 @@ class SaveImagePlus(io.ComfyNode):
 
     @classmethod
     def _resolve_template(
-        cls, template: str, prefix: str, seed: int, width: int, height: int
+        cls, template: str, prefix: str, seed: int, width: int, height: int,
+        counter: int | None = None,
     ) -> str:
         """Resolve both native `%date:yyyy-MM-dd%` and `{var}` placeholders."""
         now = datetime.now()
@@ -109,6 +111,18 @@ class SaveImagePlus(io.ComfyNode):
         result = result.replace("{prefix}", prefix)
         result = result.replace("{seed}", str(seed))
         result = result.replace("{date}", now.strftime("%Y-%m-%d"))
+        if counter is not None:
+            # Pad like Python's format spec: "{counter:05}" -> "00001".
+            # Also handle a plain "{counter}" -> str(int).
+            result = re.sub(
+                r"\{counter(:0?(\d+)d?)?\}",
+                lambda m: (
+                    f"{counter:0{int(m.group(2))}d}"
+                    if m.group(2)
+                    else str(counter)
+                ),
+                result,
+            )
         return result
 
     @classmethod
@@ -182,9 +196,6 @@ class SaveImagePlus(io.ComfyNode):
         resolved_prefix = cls._resolve_template(
             filename_prefix, filename_prefix, seed, width, height
         )
-        # Strip placeholder counters that get_save_image_path itself manages,
-        # so we don't accidentally double-replace them.
-        resolved_prefix = resolved_prefix.replace("%batch_num%", "0")
 
         # Step 2: Let ComfyUI derive subfolder + counter from the cleaned prefix.
         _, _, counter, subfolder, _ = folder_paths.get_save_image_path(
@@ -215,11 +226,12 @@ class SaveImagePlus(io.ComfyNode):
             pil_image = Image.fromarray(array)
 
             # Apply filename_template to name_root (not full prefix).
+            # Counter is included via {counter:05} inside the template.
             name_base = cls._resolve_template(
-                filename_template, name_root, seed, width, height
+                filename_template, name_root, seed, width, height, counter=counter
             )
             name_base = name_base.replace("%batch_num%", str(batch_number))
-            file_name = f"{name_base}{counter:05}_.{format}"
+            file_name = f"{name_base}.{format}"
 
             full_output_folder = (
                 os.path.join(output_dir, subfolder) if subfolder else output_dir
