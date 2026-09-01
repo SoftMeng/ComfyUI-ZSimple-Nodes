@@ -16,6 +16,7 @@ If the plugin is missing and format=jxl is selected, the node raises a clear err
 """
 
 import json
+import os
 from datetime import datetime
 
 import numpy as np
@@ -173,6 +174,7 @@ class SaveImagePlus(io.ComfyNode):
         height, width = images[0].shape[1], images[0].shape[0]
 
         paths: list[str] = []
+        results: list[dict] = []
         first_filename: str = ""
 
         for batch_number, image_tensor in enumerate(images):
@@ -186,8 +188,12 @@ class SaveImagePlus(io.ComfyNode):
             )
             name_base = name_base.replace("%batch_num%", str(batch_number))
             file_name = f"{name_base}{counter:05}_.{format}"
-            full_path = f"{subfolder}/{file_name}" if subfolder else file_name
-            full_save_path = f"{output_dir}/{full_path}"
+
+            full_output_folder = (
+                os.path.join(output_dir, subfolder) if subfolder else output_dir
+            )
+            os.makedirs(full_output_folder, exist_ok=True)
+            full_save_path = os.path.join(full_output_folder, file_name)
 
             if format == "png":
                 pil_image.save(
@@ -224,9 +230,19 @@ class SaveImagePlus(io.ComfyNode):
                     )
                 pil_image.save(full_save_path, "JXL", quality=quality)
 
-            paths.append(full_path)
+            paths.append(
+                f"{subfolder}/{file_name}" if subfolder else file_name
+            )
+            results.append(
+                {"filename": file_name, "subfolder": subfolder, "type": "output"}
+            )
             if batch_number == 0:
                 first_filename = file_name
             counter += 1
 
-        return io.NodeOutput(images, ",".join(paths), first_filename)
+        return io.NodeOutput(
+            images,
+            ",".join(paths),
+            first_filename,
+            ui={"images": results},
+        )
