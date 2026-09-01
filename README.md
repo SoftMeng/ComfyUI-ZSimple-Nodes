@@ -126,14 +126,14 @@ touch nodes/my_new_node.py
 
 ## 📋 依赖
 
+> [!NOTE]
+> ComfyUI 内置依赖（`comfy_api`、`Pillow`、`numpy`）不需要在 `requirements.txt` 中声明。本插件仅在以下情况有外部依赖：
+
 | 类型 | 包名 | 必需 | 说明 |
 |---|---|---|---|
-| 必需 | `comfy_api` | ✅ | V3 节点接口 |
-| 必需 | `Pillow` | ✅ | 图像处理 |
-| 必需 | `numpy` | ✅ | 张量转换 |
-| 可选 | `pillow-jxl-plugin` | ❌ | 启用 `format="jxl"` |
+| 可选 | `pillow-jxl-plugin` | ❌ | 启用 `format="jxl"` 时需 `pip install pillow-jxl-plugin` |
 
-完整声明见 [`requirements.txt`](requirements.txt)。
+完整声明见 [`requirements.txt`](requirements.txt)（默认仅含注释示例）。
 
 ---
 
