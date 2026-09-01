@@ -100,6 +100,10 @@ class SaveImagePlus(io.ComfyNode):
                 io.Image.Output("images"),
                 io.String.Output("paths"),
                 io.String.Output("filename_first"),
+                io.String.Output(
+                    "workflow_json",
+                    tooltip="JSON dump of extra_pnginfo['workflow'] (the API workflow). Empty string if unavailable.",
+                ),
             ],
         )
 
@@ -256,9 +260,19 @@ class SaveImagePlus(io.ComfyNode):
                 first_filename = file_name
             counter += 1
 
+        # Build workflow_json for downstream nodes (passes through extra_pnginfo['workflow']).
+        workflow_json = ""
+        if extra_pnginfo is not None:
+            workflow_data = extra_pnginfo.get("workflow") or extra_pnginfo.get(
+                "prompt"
+            )
+            if workflow_data is not None:
+                workflow_json = json.dumps(workflow_data, ensure_ascii=False)
+
         return io.NodeOutput(
             images,
             ",".join(paths),
             first_filename,
+            workflow_json,
             ui={"images": results},
         )
