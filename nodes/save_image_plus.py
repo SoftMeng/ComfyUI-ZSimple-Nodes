@@ -168,8 +168,14 @@ class SaveImagePlus(io.ComfyNode):
         extra_pnginfo=None,
     ):
         output_dir = folder_paths.get_output_directory()
-        _, _, counter, subfolder, base_prefix = folder_paths.get_save_image_path(
-            filename_prefix, output_dir, images[0].shape[1], images[0].shape[0]
+        # Resolve template BEFORE get_save_image_path so subfolder paths
+        # don't contain literal %date% / %seed% / {counter} placeholders.
+        resolved_prefix = cls._resolve_template(
+            filename_prefix, filename_prefix, seed, images[0].shape[1], images[0].shape[0]
+        )
+        resolved_prefix = resolved_prefix.replace("%batch_num%", "0")
+        _, _, counter, subfolder, _ = folder_paths.get_save_image_path(
+            resolved_prefix, output_dir, images[0].shape[1], images[0].shape[0]
         )
         height, width = images[0].shape[1], images[0].shape[0]
 
@@ -183,9 +189,7 @@ class SaveImagePlus(io.ComfyNode):
             )
             pil_image = Image.fromarray(array)
 
-            name_base = cls._resolve_template(
-                filename_template, base_prefix, seed, width, height
-            )
+            name_base = resolved_prefix
             name_base = name_base.replace("%batch_num%", str(batch_number))
             file_name = f"{name_base}{counter:05}_.{format}"
 
