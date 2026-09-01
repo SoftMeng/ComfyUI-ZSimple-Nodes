@@ -1,2 +1,2 @@
-# Optional dependencies (uncomment to enable)
-# pillow-jxl-plugin>=1.3.0 ; enables format="jxl" in SaveImagePlus
+# Optional: required to use format="jxl" in SaveImagePlus
+pillow-jxl-plugin>=1.3.0 ; python_version >= "3.8"
