@@ -50,7 +50,16 @@ class SaveImagePlus(io.ComfyNode):
             search_aliases=["save", "save image", "save plus", "export", "webp"],
             inputs=[
                 io.Image.Input("images"),
-                io.String.Input("filename_prefix", default="ZSimple"),
+                io.String.Input(
+                    "filename_prefix",
+                    default="ZSimple",
+                    tooltip=(
+                        "File prefix. Use '/' for subfolders "
+                        "(e.g. 'images/2026/ZSimple' saves under "
+                        "output/images/2026/). Supports %date%, %seed%, "
+                        "%width%, %height%, %batch_num%."
+                    ),
+                ),
                 io.Combo.Input(
                     "format",
                     options=["png", "jpeg", "webp", "jxl"],
