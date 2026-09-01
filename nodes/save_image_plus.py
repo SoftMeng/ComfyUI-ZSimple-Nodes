@@ -79,7 +79,8 @@ class SaveImagePlus(io.ComfyNode):
                     "filename_template", default="{prefix}_{counter:05}_"
                 ),
                 io.Int.Input(
-                    "seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF
+                    "seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
+                    control_after_generate=True,
                 ),
             ],
             hidden=[
@@ -137,6 +138,9 @@ class SaveImagePlus(io.ComfyNode):
             return None
         prompt_bytes = json.dumps(prompt).encode("utf-8")
         exif = Image.Exif()
+        # UserComment is ASCII per EXIF spec; embed UTF-8 bytes directly is
+        # the pragmatic choice ComfyUI's native SaveImage also makes.
+        # Pillow handles encoding via UserComment tag bytes.
         if embed_mode == "all" and extra_pnginfo is not None:
             extra_bytes = b""
             for key in extra_pnginfo:
@@ -168,16 +172,37 @@ class SaveImagePlus(io.ComfyNode):
         extra_pnginfo=None,
     ):
         output_dir = folder_paths.get_output_directory()
-        # Resolve template BEFORE get_save_image_path so subfolder paths
-        # don't contain literal %date% / %seed% / {counter} placeholders.
-        resolved_prefix = cls._resolve_template(
-            filename_prefix, filename_prefix, seed, images[0].shape[1], images[0].shape[0]
-        )
-        resolved_prefix = resolved_prefix.replace("%batch_num%", "0")
-        _, _, counter, subfolder, _ = folder_paths.get_save_image_path(
-            resolved_prefix, output_dir, images[0].shape[1], images[0].shape[0]
-        )
         height, width = images[0].shape[1], images[0].shape[0]
+
+        # Step 1: Resolve %date% / %seed% / {prefix} in user-supplied prefix.
+        # Must run BEFORE get_save_image_path because folder_paths only
+        # supports a narrow placeholder grammar (%date, %time, %seed, %width,
+        # %height) — our richer {var} syntax and full %date:yyyy-MM-dd% need
+        # to be replaced first.
+        resolved_prefix = cls._resolve_template(
+            filename_prefix, filename_prefix, seed, width, height
+        )
+        # Strip placeholder counters that get_save_image_path itself manages,
+        # so we don't accidentally double-replace them.
+        resolved_prefix = resolved_prefix.replace("%batch_num%", "0")
+
+        # Step 2: Let ComfyUI derive subfolder + counter from the cleaned prefix.
+        _, _, counter, subfolder, _ = folder_paths.get_save_image_path(
+            resolved_prefix, output_dir, width, height
+        )
+
+        # Step 3: Apply filename_template to build the actual file_name.
+        # We feed `prefix` from the resolved name (basename of prefix) so
+        # {prefix} resolves to "ZSimple" rather than the full subfolder path.
+        # Strip the subfolder part from resolved_prefix to avoid duplication
+        # in the filename (e.g. resolved_prefix="screenshots/ZSimple",
+        # subfolder="screenshots", so we want name_base="ZSimple").
+        if subfolder and resolved_prefix.startswith(subfolder + os.sep):
+            name_root = resolved_prefix[len(subfolder) + 1:]
+        elif subfolder and resolved_prefix == subfolder:
+            name_root = ""
+        else:
+            name_root = os.path.basename(resolved_prefix)
 
         paths: list[str] = []
         results: list[dict] = []
@@ -189,7 +214,10 @@ class SaveImagePlus(io.ComfyNode):
             )
             pil_image = Image.fromarray(array)
 
-            name_base = resolved_prefix
+            # Apply filename_template to name_root (not full prefix).
+            name_base = cls._resolve_template(
+                filename_template, name_root, seed, width, height
+            )
             name_base = name_base.replace("%batch_num%", str(batch_number))
             file_name = f"{name_base}{counter:05}_.{format}"
 
@@ -232,7 +260,10 @@ class SaveImagePlus(io.ComfyNode):
                         "JPEG XL save requires pillow-jxl-plugin. "
                         "Install with: pip install pillow-jxl-plugin"
                     )
-                pil_image.save(full_save_path, "JXL", quality=quality)
+                # JXL uses distance parameter (lower = higher quality),
+                # not quality 0-100. Approximate quality -> distance.
+                distance = max(0.0, (100 - quality) / 20.0)
+                pil_image.save(full_save_path, "JXL", distance=distance)
 
             paths.append(
                 f"{subfolder}/{file_name}" if subfolder else file_name
