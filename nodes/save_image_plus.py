@@ -7,7 +7,8 @@ Improvements over the native SaveImage:
 - JPEG subsampling control (4:4:4 / 4:2:0)
 - WebP lossless mode + quality/method trade-off
 - Metadata embedding policy: none / prompt_only / all (JPEG EXIF size guarded)
-- Filename template supporting both ComfyUI native `%date:yyyy-MM-dd%` syntax and `{var}` syntax
+- Subfolder template (independent field, default %date:yyyy-MM-dd%)
+- User-configurable counter zero-padding width
 - Returns saved paths and first filename as STRING outputs (chainable)
 
 JPEG XL support requires `pillow-jxl-plugin` to be installed:
@@ -17,7 +18,6 @@ If the plugin is missing and format=jxl is selected, the node raises a clear err
 
 import json
 import os
-import re
 from datetime import datetime
 
 import numpy as np
@@ -50,15 +50,21 @@ class SaveImagePlus(io.ComfyNode):
             search_aliases=["save", "save image", "save plus", "export", "webp"],
             inputs=[
                 io.Image.Input("images"),
+                io.String.Input("filename_prefix", default="ZSimple"),
                 io.String.Input(
-                    "filename_prefix",
-                    default="ZSimple",
+                    "subfolder_template",
+                    default="%date:yyyy-MM-dd%",
                     tooltip=(
-                        "File prefix. Use '/' for subfolders "
-                        "(e.g. 'images/2026/ZSimple' saves under "
-                        "output/images/2026/). Supports %date%, %seed%, "
-                        "%width%, %height%, %batch_num%."
+                        "Subfolder under output/. Supports %date%, %seed%, "
+                        "%width%, %height%. Empty string = save to output_dir root."
                     ),
+                ),
+                io.Int.Input(
+                    "filename_number_padding",
+                    default=5,
+                    min=1,
+                    max=9,
+                    tooltip="Zero-padding width for the file counter (e.g. 5 -> 00001).",
                 ),
                 io.Combo.Input(
                     "format",
@@ -85,13 +91,6 @@ class SaveImagePlus(io.ComfyNode):
                     options=["none", "prompt_only", "all"],
                     default="all",
                 ),
-                io.String.Input(
-                    "filename_template", default="{prefix}_{counter:05}_"
-                ),
-                io.Int.Input(
-                    "seed", default=0, min=0, max=0xFFFFFFFFFFFFFFFF,
-                    control_after_generate=True,
-                ),
             ],
             hidden=[
                 io.Hidden.prompt,
@@ -104,12 +103,12 @@ class SaveImagePlus(io.ComfyNode):
             ],
         )
 
-    @classmethod
-    def _resolve_template(
-        cls, template: str, prefix: str, seed: int, width: int, height: int,
-        counter: int | None = None,
+    @staticmethod
+    def _resolve_subfolder(
+        template: str, seed: int, width: int, height: int
     ) -> str:
-        """Resolve both native `%date:yyyy-MM-dd%` and `{var}` placeholders."""
+        """Resolve subfolder template — supports %date%, %seed%, %width%,
+        %height%. Empty string means no subfolder (save to output_dir root)."""
         now = datetime.now()
         result = template
         result = result.replace("%date:yyyy-MM-dd%", now.strftime("%Y-%m-%d"))
@@ -117,21 +116,6 @@ class SaveImagePlus(io.ComfyNode):
         result = result.replace("%seed%", str(seed))
         result = result.replace("%width%", str(width))
         result = result.replace("%height%", str(height))
-        result = result.replace("{prefix}", prefix)
-        result = result.replace("{seed}", str(seed))
-        result = result.replace("{date}", now.strftime("%Y-%m-%d"))
-        if counter is not None:
-            # Pad like Python's format spec: "{counter:05}" -> "00001".
-            # Also handle a plain "{counter}" -> str(int).
-            result = re.sub(
-                r"\{counter(:0?(\d+)d?)?\}",
-                lambda m: (
-                    f"{counter:0{int(m.group(2))}d}"
-                    if m.group(2)
-                    else str(counter)
-                ),
-                result,
-            )
         return result
 
     @classmethod
@@ -182,6 +166,8 @@ class SaveImagePlus(io.ComfyNode):
         cls,
         images,
         filename_prefix,
+        subfolder_template,
+        filename_number_padding,
         format,
         quality,
         png_compress_level,
@@ -189,63 +175,37 @@ class SaveImagePlus(io.ComfyNode):
         webp_method,
         jpeg_subsampling,
         embed_metadata,
-        filename_template,
-        seed,
         prompt=None,
         extra_pnginfo=None,
     ):
         output_dir = folder_paths.get_output_directory()
         height, width = images[0].shape[1], images[0].shape[0]
 
-        # Step 1: Resolve %date% / %seed% / {prefix} in user-supplied prefix.
-        # Must run BEFORE get_save_image_path because folder_paths only
-        # supports a narrow placeholder grammar (%date, %time, %seed, %width,
-        # %height) — our richer {var} syntax and full %date:yyyy-MM-dd% need
-        # to be replaced first.
-        resolved_prefix = cls._resolve_template(
-            filename_prefix, filename_prefix, seed, width, height
+        # Resolve subfolder template (single-purpose field).
+        subfolder = cls._resolve_subfolder(
+            subfolder_template, seed=0, width=width, height=height
         )
-
-        # Step 2: Let ComfyUI derive subfolder + counter from the cleaned prefix.
-        _, _, counter, subfolder, _ = folder_paths.get_save_image_path(
-            resolved_prefix, output_dir, width, height
+        full_output_folder = (
+            os.path.join(output_dir, subfolder) if subfolder else output_dir
         )
-
-        # Step 3: Apply filename_template to build the actual file_name.
-        # We feed `prefix` from the resolved name (basename of prefix) so
-        # {prefix} resolves to "ZSimple" rather than the full subfolder path.
-        # Strip the subfolder part from resolved_prefix to avoid duplication
-        # in the filename (e.g. resolved_prefix="screenshots/ZSimple",
-        # subfolder="screenshots", so we want name_base="ZSimple").
-        if subfolder and resolved_prefix.startswith(subfolder + os.sep):
-            name_root = resolved_prefix[len(subfolder) + 1:]
-        elif subfolder and resolved_prefix == subfolder:
-            name_root = ""
-        else:
-            name_root = os.path.basename(resolved_prefix)
+        os.makedirs(full_output_folder, exist_ok=True)
 
         paths: list[str] = []
         results: list[dict] = []
         first_filename: str = ""
 
-        for batch_number, image_tensor in enumerate(images):
-            array = np.clip(255.0 * image_tensor.cpu().numpy(), 0, 255).astype(
-                np.uint8
-            )
+        # Counter starts at 1; user controls zero-padding width.
+        counter = 1
+        pad = max(1, int(filename_number_padding))
+
+        for image_tensor in images:
+            array = np.clip(
+                255.0 * image_tensor.cpu().numpy(), 0, 255
+            ).astype(np.uint8)
             pil_image = Image.fromarray(array)
 
-            # Apply filename_template to name_root (not full prefix).
-            # Counter is included via {counter:05} inside the template.
-            name_base = cls._resolve_template(
-                filename_template, name_root, seed, width, height, counter=counter
-            )
-            name_base = name_base.replace("%batch_num%", str(batch_number))
-            file_name = f"{name_base}.{format}"
+            file_name = f"{filename_prefix}_{counter:0{pad}d}.{format}"
 
-            full_output_folder = (
-                os.path.join(output_dir, subfolder) if subfolder else output_dir
-            )
-            os.makedirs(full_output_folder, exist_ok=True)
             full_save_path = os.path.join(full_output_folder, file_name)
 
             if format == "png":
@@ -292,7 +252,7 @@ class SaveImagePlus(io.ComfyNode):
             results.append(
                 {"filename": file_name, "subfolder": subfolder, "type": "output"}
             )
-            if batch_number == 0:
+            if len(results) == 1:
                 first_filename = file_name
             counter += 1
 
