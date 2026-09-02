@@ -187,10 +187,10 @@ _SIGMA_PRESETS_BY_NAME = {
 def _get_sigma_preset(steps: int):
     clamped = max(3, min(steps, 9))
     if clamped <= 7:
-        return SIGMA_PRESETS_BY_NAME[f"alpha_{clamped}"]
+        return _SIGMA_PRESETS_BY_NAME[f"alpha_{clamped}"]
     if clamped == 8:
-        return SIGMA_PRESETS_BY_NAME["bravo_8"]
-    return SIGMA_PRESETS_BY_NAME["alpha_8"]
+        return _SIGMA_PRESETS_BY_NAME["bravo_8"]
+    return _SIGMA_PRESETS_BY_NAME["alpha_8"]
 
 
 def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
