@@ -34,6 +34,7 @@ SPECTRAL_TILT_PRESETS = [
     ("stages12x_l", "12x", (0.2, -2.0), 0.8),
     ("stages123_H", "123", (0.2, -0.9), 0.7),
 ]
+FREEU_V2_DEFAULTS = (1.3, 1.4, 0.9, 0.2)
 
 
 def _stage_split(total_steps: int) -> tuple[int, int, int]:
@@ -133,6 +134,48 @@ def _adjust_spectral_distribution(noise: torch.Tensor, alpha: float, power_gamma
     filtered = torch.fft.ifft2(n_fft, dim=(-2, -1)).real
     std = filtered.std(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
     return filtered / std
+
+
+def _fourier_lowpass(x: torch.Tensor, threshold: int, scale: float) -> torch.Tensor:
+    x_freq = torch.fft.fftn(x.float(), dim=(-2, -1))
+    x_freq = torch.fft.fftshift(x_freq, dim=(-2, -1))
+    B, C, H, W = x_freq.shape
+    mask = torch.ones((B, C, H, W), device=x.device)
+    crow, ccol = H // 2, W // 2
+    mask[..., crow - threshold:crow + threshold, ccol - threshold:ccol + threshold] = scale
+    x_freq = x_freq * mask
+    x_freq = torch.fft.ifftshift(x_freq, dim=(-2, -1))
+    return torch.fft.ifftn(x_freq, dim=(-2, -1)).real.to(x.dtype)
+
+
+def _apply_freeu_v2(model, b1: float, b2: float, s1: float, s2: float):
+    """Patch model output blocks per FreeU_V2 paper (Si et al. 2023).
+
+    Returns a clone with output_block_patch set; the returned model is
+    isolated from the original so other nodes are unaffected.
+    """
+    model_channels = model.model.model_config.unet_config.get("model_channels")
+    if model_channels is None:
+        return model
+    scale_dict = {model_channels * 4: (b1, s1), model_channels * 2: (b2, s2)}
+
+    def output_block_patch(h, hsp, transformer_options):
+        scale = scale_dict.get(int(h.shape[1]), None)
+        if scale is None:
+            return h, hsp
+        hidden_mean = h.mean(1, keepdim=True)
+        B = hidden_mean.shape[0]
+        hidden_max = hidden_mean.view(B, -1).max(dim=-1, keepdim=True)[0]
+        hidden_min = hidden_mean.view(B, -1).min(dim=-1, keepdim=True)[0]
+        denom = (hidden_max - hidden_min).clamp(min=1e-6).unsqueeze(2).unsqueeze(3)
+        hidden_mean = (hidden_mean - hidden_min.unsqueeze(2).unsqueeze(3)) / denom
+        h[:, : h.shape[1] // 2] = h[:, : h.shape[1] // 2] * ((scale[0] - 1) * hidden_mean + 1)
+        hsp = _fourier_lowpass(hsp, threshold=1, scale=scale[1])
+        return h, hsp
+
+    m = model.clone()
+    m.set_model_output_block_patch(output_block_patch)
+    return m
 
 
 class SpectralAdjustedSampler(KSAMPLER):
@@ -240,7 +283,7 @@ def _coerce_latent(latent):
     raise TypeError(f"latent must be dict or Tensor, got {type(latent).__name__}")
 
 
-def adjust_latent_size(latent, factor: float):
+def adjust_latent_size(latent, factor: float, method: str = "area"):
     latent = _coerce_latent(latent)
     if factor == 1.0:
         return latent
@@ -248,13 +291,7 @@ def adjust_latent_size(latent, factor: float):
     _, _, hh, ww = samples.shape
     new_h = max(8, round(hh * factor / 8) * 8)
     new_w = max(8, round(ww * factor / 8) * 8)
-    if new_h % hh == 0 and new_w % ww == 0:
-        out = F.interpolate(samples, size=(new_h, new_w), mode='area')
-    else:
-        out = F.interpolate(samples, size=(new_h, new_w), mode='bicubic', align_corners=False)
-        orig_var = samples.var()
-        new_var = out.var().clamp(min=1e-6)
-        out = out * (orig_var / new_var).sqrt()
+    out = comfy.utils.common_upscale(samples, new_w, new_h, method, "disabled")
     return {**latent, "samples": out}
 
 
@@ -362,10 +399,18 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="off=clean. scrambled=structure variation. refined_N=N-step coherence recovery."),
                 io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
                                 tooltip="Latent size multiplier per stage. 2.0=4x, √2=2x, etc."),
+                io.Combo.Input("upscale_method",
+                                options=["nearest-exact", "bilinear", "area", "bislerp", "bicubic", "lanczos"],
+                                default="area",
+                                tooltip="Latent-domain resize method (passed to comfy.utils.common_upscale)."),
                 io.Boolean.Input("detailed_refiner", default=True,
                                  tooltip="Stage3 switches to dpmpp_sde for high-freq detail recovery."),
                 io.Combo.Input("spectral_tilt", options=[p[0] for p in SPECTRAL_TILT_PRESETS], default="none",
-                                tooltip="Colored Noise Sampling style freq-domain noise shaping."),
+                                tooltip="Colored Noise Sampling style freq-domain noise shaping. "
+                                        "Acts on the noise tensor (orthogonal to model_function_hook which acts on UNet)."),
+                io.Combo.Input("model_function_hook", options=["none", "freeu_v2"], default="none",
+                                tooltip="Apply a UNet-level hook. 'freeu_v2' sets FreeU_V2 output-block patch "
+                                        "(b1=1.3, b2=1.4, s1=0.9, s2=0.2)."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage1_scheduler", options=SCHEDULER_NAMES, default="normal"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
@@ -380,7 +425,8 @@ class ZImageTurboProgressive(io.ComfyNode):
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 start_step: int, end_step: int, creativity_mode: str,
-                upscale_factor: float, detailed_refiner: bool, spectral_tilt: str,
+                upscale_factor: float, upscale_method: str, detailed_refiner: bool, spectral_tilt: str,
+                model_function_hook: str,
                 stage1_sampler: str, stage1_scheduler: str,
                 stage2_sampler: str, stage2_scheduler: str,
                 stage3_sampler: str, stage3_scheduler: str,
@@ -406,6 +452,9 @@ class ZImageTurboProgressive(io.ComfyNode):
         sampler2 = _resolve_spectral_for_stage(1, tilt_stages, alpha_tilting, alpha_sharpness, stage2_sampler)
         s3_base = "dpmpp_sde" if detailed_refiner else stage3_sampler
         sampler3 = _resolve_spectral_for_stage(2, tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
+
+        if model_function_hook == "freeu_v2":
+            model = _apply_freeu_v2(model, *FREEU_V2_DEFAULTS)
 
         model_sampling = model.get_model_object("model_sampling")
         original_shift = getattr(model_sampling, "shift", None)
@@ -446,7 +495,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             )
             eps_s1 = latent_s1["samples"].clone()
 
-            latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
+            latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor, method=upscale_method)
             preproc_pos = positive_stg2 or cond_s1
             if scramble_on:
                 t = latent_s2_in["samples"]
@@ -470,7 +519,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             if upscale_factor <= 1.0:
                 latent_s3_in = latent_s2
             else:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor, method=upscale_method)
             eps_s2 = latent_s2["samples"].clone()
             latent_s3 = _stage_denoise(
                 model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
