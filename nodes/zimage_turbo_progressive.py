@@ -212,7 +212,7 @@ def adjust_latent_size(latent, factor: float):
     _, _, hh, ww = samples.shape
     new_h = max(8, round(hh * factor / 8) * 8)
     new_w = max(8, round(ww * factor / 8) * 8)
-    out = comfy.utils.common_upscale(samples, new_w, new_h, "area", "disabled")
+    out = comfy.utils.common_upscale(samples, new_w, new_h, "bislerp", "disabled")
     return {**latent, "samples": out}
 
 
