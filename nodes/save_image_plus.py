@@ -19,6 +19,7 @@ If the plugin is missing and format=jxl is selected, the node raises a clear err
 import json
 import os
 from datetime import datetime
+from pathlib import PurePath
 
 import numpy as np
 from PIL import ExifTags, Image
@@ -198,9 +199,24 @@ class SaveImagePlus(io.ComfyNode):
         results: list[dict] = []
         first_filename: str = ""
 
-        # Counter starts at 1; user controls zero-padding width.
-        counter = 1
         pad = max(1, int(filename_number_padding))
+
+        # Resume counter from existing files to avoid overwrite.
+        counter = 1
+        try:
+            for name in os.listdir(full_output_folder):
+                p = PurePath(name)
+                if p.suffix.lstrip(".") != format:
+                    continue
+                if not p.stem.startswith(f"{filename_prefix}_"):
+                    continue
+                suffix = p.stem[len(filename_prefix) + 1:]
+                try:
+                    counter = max(counter, int(suffix) + 1)
+                except ValueError:
+                    pass
+        except FileNotFoundError:
+            pass
 
         for image_tensor in images:
             array = np.clip(
