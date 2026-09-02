@@ -24,8 +24,8 @@ from comfy.samplers import KSAMPLER, ksampler, sampler_object
 import latent_preview
 
 
-SAMPLER_NAMES = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde", "uni_pc", "ddim"]
-SCHEDULER_NAMES = ["normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta"]
+SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
+SCHEDULER_NAMES = comfy.samplers.SCHEDULER_NAMES
 CREATIVITY_MODES = ["off", "scrambled", "refined_1", "refined_2", "refined_3"]
 SPECTRAL_TILT_PRESETS = [
     ("none", "", (0.0, 0.0), 1.0),
