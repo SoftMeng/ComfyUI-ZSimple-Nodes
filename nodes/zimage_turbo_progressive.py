@@ -163,13 +163,46 @@ def _resolve_spectral_for_stage(stage_idx: int, stage: str, tilt_stages: str,
 def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
     g = torch.Generator().manual_seed(seed)
     noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
-    if noise_scale != 1.0:
+    if isinstance(noise_scale, torch.Tensor):
+        noise = noise * noise_scale.to(device=device, dtype=noise.dtype)
+    elif noise_scale != 1.0:
         noise = noise * noise_scale
-    if noise_bias != 0.0:
+    if isinstance(noise_bias, torch.Tensor):
+        noise = noise + noise_bias.to(device=device, dtype=noise.dtype)
+    elif noise_bias != 0.0:
         bias = torch.full((shape[0], shape[1], 1, 1), float(noise_bias),
                           dtype=dtype, device=device)
         noise = noise + bias
     return noise
+
+
+def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
+                                     sigma_first, seed, sample_hw=None, reference_tensor=None):
+    """Probe-run pure noise at [1.0, sigma_first] on a small latent,
+    return per-channel (bias, scale) of the denoised result.
+
+    bravo/alpha presets start below sigma=1.0 (0.991), leaving a
+    systematic low-frequency gap in the first denoise step. The
+    probe's channel statistics calibrate the initial noise bias.
+    """
+    dtype = reference_tensor.dtype
+    B, C = reference_tensor.shape[0], reference_tensor.shape[1]
+    if sample_hw is None:
+        H, W = reference_tensor.shape[-2:]
+    else:
+        H, W = sample_hw
+    probe = torch.zeros((B, C, H, W), dtype=dtype, layout=reference_tensor.layout, device="cpu")
+    sigmas = torch.tensor([1.0, float(sigma_first)], dtype=torch.float32)
+    out = _stage_denoise(
+        model, {"samples": probe}, positive, negative, 1.0, sampler_obj, sigmas,
+        noise_seed=seed,
+        add_noise=True,
+        force_final_denoise=False,
+    )
+    result = out["samples"].to(dtype)
+    bias = result.mean(dim=(2, 3), keepdim=True)
+    scale = result.std(dim=(2, 3), keepdim=True)
+    return bias, scale
 
 
 _SIGMA_PRESETS_BY_NAME = {
@@ -299,6 +332,10 @@ class ZImageTurboProgressive(io.ComfyNode):
                              tooltip="Seed for stage1. Stage2/3 use seed+16, 696969 (fixed)."),
                 io.Float.Input("shift", default=3.5, min=0.0, max=100.0, step=0.01,
                                 tooltip="Logit-normal time shift (ModelSamplingSD3 style). 0 disables. Z-Image Turbo ≈3.5."),
+                io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
+                                tooltip="Initial noise bias level. Non-zero runs a small probe sample to calibrate "
+                                        "per-channel low-frequency bias (needed because preset sigmas start <1.0). "
+                                        "Positive = vivid colors; negative = muted."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
                 io.Combo.Input("return_leftover_noise", options=["disable", "enable"], default="disable",
@@ -329,6 +366,7 @@ class ZImageTurboProgressive(io.ComfyNode):
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
+                initial_bias: float,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 start_step: int, end_step: int, creativity_mode: bool,
                 upscale_factor: float, detailed_refiner: bool, spectral_tilt: str,
@@ -377,6 +415,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         high_as_a_kite = (seed % 3) == 0
         scramble_on = creativity_mode
         preproc_n = (0 if high_as_a_kite else 1) if creativity_mode else 0
+        initial_bias_level = min(max(20 * initial_bias, -10.0), 10.0)
 
         latent_input = {
             **latent_input,
@@ -396,9 +435,26 @@ class ZImageTurboProgressive(io.ComfyNode):
             size_changed_s1_s2 = upscale_factor > 1.0
             force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on or size_changed_s1_s2
 
+            initial_noise_scale = 1.0
+            initial_noise_bias = 0.0
+            if add_noise_bool and initial_bias_level != 0:
+                probe_hw = (min(64, latent_input["samples"].shape[-2]),
+                            min(64, latent_input["samples"].shape[-1]))
+                pbias, pscale = _estimate_initial_noise_features(
+                    model, cond_s1, negative, sampler1,
+                    sigma_first=sigmas1[0], seed=seed,
+                    sample_hw=probe_hw,
+                    reference_tensor=latent_input["samples"],
+                )
+                initial_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
+                initial_noise_bias = initial_noise_bias * initial_bias_level
+                initial_noise_scale = 1.0 + 0.2
+
             latent_s1 = _stage_denoise(
                 model, latent_input, cond_s1, negative, cfg, sampler1, sigmas1,
                 noise_seed=seed,
+                noise_scale=initial_noise_scale,
+                noise_bias=initial_noise_bias,
                 add_noise=add_noise_bool,
                 force_final_denoise=force_denoise_stg1_stg2 or sigmas2 is None,
             )
