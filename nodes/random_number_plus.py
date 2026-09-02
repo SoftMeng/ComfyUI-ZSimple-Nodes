@@ -26,6 +26,7 @@ class RandomNumberPlus(io.ComfyNode):
             ],
             outputs=[
                 io.Int.Output("int_out"),
+                io.String.Output("string_out"),
                 io.Int.Output("number_out"),
                 io.Int.Output("next_int"),
             ],
@@ -33,4 +34,4 @@ class RandomNumberPlus(io.ComfyNode):
 
     @classmethod
     def execute(cls, seed: int) -> io.NodeOutput:
-        return io.NodeOutput(int(seed), seed, seed + 1)
+        return io.NodeOutput(int(seed), str(seed), seed, seed + 1)

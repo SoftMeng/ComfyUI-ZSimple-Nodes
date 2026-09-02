@@ -20,7 +20,7 @@
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
-| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + `next_int`（seed + 1）给下游节点预热 |
+| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + STRING 当前值 + `next_int`（seed + 1）—— STRING 输出可直接喂给 `filename_prefix` 等需要字符串的下游 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
 | **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive upscale 编排 | 3 阶段（构图 / 协调 / 细化）；CFG / shift / 创意 / Spectral-Tilt / Detailed-Refiner 一站式开关 |
@@ -61,11 +61,11 @@ pip install -r requirements.txt
 
 | 特性 | 说明 |
 |---|---|
-| 多输出 | `int_out`（当前 seed）+ `number_out`（同 int_out，便于不同连接节点命名）+ `next_int`（seed + 1）|
+| 多类型输出 | `int_out`（当前 seed INT）+ `string_out`（当前 seed STRING，可直接接到 SaveTextPlus/SaveImagePlus 的 `filename_prefix`）+ `next_int`（seed + 1）+ `number_out` |
 | 生成后控制 | `randomize` / `increment` / `decrement` / `fixed` —— 由 ComfyUI 前端 widget 处理 |
 | 零依赖 | 仅依赖 ComfyUI V3 API |
 
-**典型用法**：从 `int_out` / `next_int` 注入下一节点的 KSampler。
+**典型用法**：从 `int_out` / `next_int` 注入下一节点的 KSampler；从 `string_out` 注入 SaveTextPlus/SaveImagePlus 的 `filename_prefix`。
 
 ---
 
