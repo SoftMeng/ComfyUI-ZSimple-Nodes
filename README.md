@@ -122,7 +122,7 @@ pip install -r requirements.txt
 
 ### 🎯 ZImageTurboProgressive（菜单：ZSimple-Nodes/sampling）
 
-**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale。共用 1 个 sigma 序列按 2:4:2 切片接力：stage1 跑前 2 步 → upscale → stage2 跑中间 4 步 → upscale → stage3 跑最后 2 步。
+**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale。每 stage 用各自独立的 hardcoded sigma 序列（preset），stage 接力 = latent 接力（前 stage 输出作下一 stage 输入），不是 sigma 切片。
 
 #### 核心输入
 
@@ -136,13 +136,17 @@ pip install -r requirements.txt
 | `seed` | INT | 0 | stage1 用此 seed；stage2/3 用 `seed+16`、`seed+32` 派生 |
 | `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；0 禁用 |
 | `add_noise` | COMBO | `enable` | stage1 是否加噪；inpainting 设为 `disable` |
-| `steps` | INT | 8 | 总步数按 2:4:2 分配 |
+| `sigma_preset` | COMBO | `bravo_8` | per-stage sigma 序列；`alpha_8`（细节强 refiner）/ `bravo_8`（默认）|
 | `upscale_factor` | FLOAT | 2.0 | 单 stage 倍率；3 stage 总放大 = `factor²` |
 | `sampler` | COMBO | `euler` | 3 stage 共用 solver |
-| `scheduler` | COMBO | `normal` | sigma 调度器（共用） |
 
 可选 8 个 sampler：`euler` / `euler_ancestral` / `dpmpp_2m` / `dpmpp_sde` / `dpmpp_2m_sde` / `dpmpp_3m_sde` / `uni_pc` / `ddim`
-可选 6 个 scheduler：`normal` / `karras` / `exponential` / `sgm_uniform` / `ddim_uniform` / `beta`
+
+#### 3 阶段 sigma 分布（bravo_8 / alpha_8）
+
+每个 stage 跑自己的 sigma 序列，stage 之间**不连续**（stage2 起步 sigma 高于 stage1 末）——这是 progressive relay 的核心：
+- `bravo_8`：stage1 跑 2 sigma → stage2 跑 6 sigma（从 sigma≈0.935 起，**高于** stage1 末 0.920）→ stage3 跑 3 sigma
+- `alpha_8`：stage1 跑 3 sigma → stage2 跑 5 sigma → stage3 跑 3 sigma（更激进）
 
 #### 输出
 

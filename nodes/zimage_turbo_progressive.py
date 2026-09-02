@@ -1,8 +1,10 @@
 """Z-Image Turbo 3-stage progressive upscaling.
 
-Three sampling stages share one sigma sequence (2:4:2 step split).
-Each stage takes the previous stage's latent, upscales it, then
-runs the slice of sigmas that was assigned to it.
+Each stage runs its own hardcoded sigma sequence; stage-to-stage
+relay is the previous stage's latent, not a slice of a single
+shared sigma schedule. This is the model ZImagePowerNodes uses
+in its BRAVO/ALPHA presets and is the only relay semantic that
+survives upscale_factor > 1.0.
 """
 from typing import Any
 
@@ -19,35 +21,20 @@ import latent_preview
 
 
 SAMPLER_NAMES = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde", "uni_pc", "ddim"]
-SCHEDULER_NAMES = ["normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta"]
 
 
-def _stage_split(total_steps: int) -> tuple[int, int, int]:
-    s = max(2, total_steps)
-    s1 = max(1, round(s * 0.25))
-    s3 = max(1, round(s * 0.25))
-    s2 = max(1, s - s1 - s3)
-    return s1, s2, s3
-
-
-def _slice_sigmas_by_steps(sigmas, start_step: int, num_steps: int):
-    if sigmas is None or sigmas.numel() < 2:
-        return sigmas
-    n_total = sigmas.numel() - 1
-    i0 = max(0, min(start_step, n_total))
-    i1 = max(i0 + 1, min(start_step + num_steps + 1, sigmas.numel()))
-    return sigmas[i0:i1]
-
-
-def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
-    model_sampling = model.get_model_object("model_sampling")
-    discard_set = ("dpm_2", "dpm_2_ancestral", "uni_pc", "uni_pc_bh2")
-    do_discard = sampler_name in discard_set
-    calc_steps = steps + 1 if do_discard else steps
-    sigmas = comfy.samplers.calculate_sigmas(model_sampling, scheduler_name, calc_steps)
-    if do_discard and sigmas is not None and sigmas.numel() >= 2:
-        sigmas = torch.cat([sigmas[:-2], sigmas[-1:]])
-    return sigmas
+SIGMA_PRESETS = {
+    "alpha_8": (
+        (0.991, 0.980, 0.920),
+        (0.935, 0.900, 0.875, 0.750, 0.000),
+        (0.658, 0.302, 0.000),
+    ),
+    "bravo_8": (
+        (0.991, 0.920),
+        (0.935, 0.900, 0.875, 0.820, 0.750, 0.000),
+        (0.658, 0.302, 0.000),
+    ),
+}
 
 
 def _coerce_latent(latent):
@@ -79,6 +66,7 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
     eps = torch.randn(x0.shape, generator=g, dtype=x0.dtype, device="cpu").to(device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
+    sigmas = torch.tensor(sigmas, dtype=x0.dtype, device=device)
     callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
     samples = comfy.sample.sample_custom(
         model, eps, cfg, sampler_obj, sigmas,
@@ -98,7 +86,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             node_id="ZImageTurboProgressive",
             display_name="Z-Image Turbo Progressive",
             category="ZSimple-Nodes/sampling",
-            description="3-stage progressive upscale (2:4:2 step split) for Z-Image Turbo.",
+            description="3-stage progressive upscale for Z-Image Turbo.",
             inputs=[
                 io.Latent.Input("latent_input"),
                 io.Model.Input("model"),
@@ -113,32 +101,30 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Logit-normal time shift. 0 disables. Z-Image Turbo ≈3.5."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
-                io.Int.Input("steps", default=8, min=2, max=64,
-                             tooltip="Total denoise steps, split 2:4:2 across 3 stages."),
+                io.Combo.Input("sigma_preset", options=list(SIGMA_PRESETS.keys()), default="bravo_8",
+                                tooltip="Per-stage sigma sequences. alpha_8 has stronger refiner; bravo_8 is the default."),
                 io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
                                 tooltip="Latent size multiplier per stage. 2.0 = 4x total."),
                 io.Combo.Input("sampler", options=SAMPLER_NAMES, default="euler",
                                 tooltip="Solver used for all three stages."),
-                io.Combo.Input("scheduler", options=SCHEDULER_NAMES, default="normal",
-                                tooltip="Sigma scheduler. Shared by all stages."),
             ],
             outputs=[io.Latent.Output("latent_output")],
         )
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
-                add_noise: str, steps: int, upscale_factor: float,
-                sampler: str, scheduler: str,
+                add_noise: str, sigma_preset: str, upscale_factor: float, sampler: str,
                 positive: list | None = None,
                 positive_stg2: list | None = None,
                 positive_stg3: list | None = None) -> io.NodeOutput:
 
-        s1_steps, s2_steps, s3_steps = _stage_split(steps)
         add_noise_bool = add_noise == "enable"
         cond_s1 = positive or []
         cond_s2 = positive_stg2 or cond_s1
         cond_s3 = positive_stg3 or cond_s2
         negative = cond_s1 if cfg > 0 else []
+
+        sigmas1, sigmas2, sigmas3 = SIGMA_PRESETS[sigma_preset]
 
         model_sampling = model.get_model_object("model_sampling")
         original_shift = getattr(model_sampling, "shift", None)
@@ -146,15 +132,6 @@ class ZImageTurboProgressive(io.ComfyNode):
             model_sampling.shift = shift
 
         try:
-            sigmas_full = _resolve_sigmas(model, scheduler, sampler, steps)
-            if sigmas_full is None:
-                print("[ZImageTurboProgressive] sigma generation failed; check scheduler.")
-                return io.NodeOutput(latent_input)
-
-            sigmas1 = _slice_sigmas_by_steps(sigmas_full, 0, s1_steps)
-            sigmas2 = _slice_sigmas_by_steps(sigmas_full, s1_steps, s2_steps)
-            sigmas3 = _slice_sigmas_by_steps(sigmas_full, s1_steps + s2_steps, s3_steps)
-
             latent_input = {
                 **latent_input,
                 "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"]),
