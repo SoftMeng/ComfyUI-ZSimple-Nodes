@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-V3%20Schema-blue?style=for-the-badge)](https://github.com/comfyanonymous/ComfyUI)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=for-the-badge)](https://www.python.org/)
-[![Nodes](https://img.shields.io/badge/Nodes-2-orange?style=for-the-badge)](#-节点列表)
+[![Nodes](https://img.shields.io/badge/Nodes-3-orange?style=for-the-badge)](#-节点列表)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen?style=for-the-badge)](../../pulls)
 
 **为 ComfyUI 工作流添砖加瓦 · 单文件单节点 · 现代压缩与质量参数**
@@ -20,7 +20,7 @@
 
 ComfyUI 自带的 `SaveImage` 节点已足够基础，但当你需要更精细的控制时——比如**JPEG q 值、PNG 压缩级别、WebP 无损模式、metadata 嵌入策略**——你会发现原生节点要么不支持，要么写死。
 
-`ComfyUI-ZSimple-Nodes` 是一个**渐进生长**的个人插件，每个节点都解决一个具体痛点，单文件单职责。**当前已上线的两个节点都经过 2026 图像压缩最佳实践审查**。
+`ComfyUI-ZSimple-Nodes` 是一个**渐进生长**的个人插件，每个节点都解决一个具体痛点，单文件单职责。**当前已上线的三个节点都经过 2026 图像压缩最佳实践审查**。
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -63,7 +63,7 @@ pip install -r requirements.txt
 | 生成后控制 | `randomize` / `increment` / `decrement` / `fixed` —— 由 ComfyUI 前端 widget 处理 |
 | 零依赖 | 仅依赖 ComfyUI V3 API |
 
-**典型用法**：从 `seed_out` 拉取字符串种子注入 `CLIPTextEncode`，从 `next_int` 注入下一节点的 KSampler。
+**典型用法**：从 `string_out` 拉取字符串种子注入 `CLIPTextEncode`，从 `next_int` 注入下一节点的 KSampler。
 
 ---
 
@@ -80,7 +80,7 @@ pip install -r requirements.txt
 | Metadata 细粒度策略 | 全局开关 | ✅（`none` / `prompt_only` / `all`） |
 | **JPEG EXIF 64KB 保护** | 静默截断 | ✅（自动降级） |
 | 返回保存路径 | ❌ | ✅（STRING 输出，可链式） |
-| 双语法文件名模板 | 仅 `%date%` | ✅（同时支持 `%date%` 与 `{var}`） |
+| 可续接 counter | ❌（每次都 _00001 覆盖） | ✅（扫描目录续接） |
 
 #### 压缩参数（2026 最佳实践默认值）
 
@@ -94,6 +94,17 @@ pip install -r requirements.txt
 
 > [!WARNING]
 > **JPEG EXIF 段硬硬限 64KB**。大 workflow + prompt JSON 经常超量，导致 metadata 静默截断。SaveImagePlus 检测到超量时会**自动降级到 `prompt_only`**，但仍建议**存档优先用 PNG 或 lossless WebP**。
+
+#### Counter 续接（避免覆盖）
+
+每次 `execute()` 启动时扫描目标子目录，按 `<filename>_prefix + ext` 过滤已有文件，取最大 `_NNNNN + 1` 作为起始 counter；目录为空时仍从 `_00001` 起算。四种格式（png / jpeg / webp / jxl）各自独立计数，同 prefix 切换格式互不串扰。
+
+#### 输出
+
+- `images`：IMAGE（原图透传，可继续接到下游节点）
+- `paths`：STRING（所有保存文件的相对路径，逗号分隔）
+- `filename_first`：STRING（本批第一张的文件名）
+- `workflow_json`：STRING（自动从 `extra_pnginfo` 导出 API workflow JSON；空字符串表示不可用）
 
 ### 📝 SaveTextPlus（菜单：ZSimple-Nodes/text）
 
@@ -112,6 +123,9 @@ pip install -r requirements.txt
 - `path`：STRING（保存的文件完整路径）
 - `byte_count`：INT（写入字节数）
 - `workflow_json`：STRING（自动从 `extra_pnginfo` 导出 API workflow JSON）
+
+> [!WARNING]
+> **当前文件名固定为 `<prefix>_00001.<ext>`，不会续接 counter**（与 SaveImagePlus 行为不同）。重复保存会覆盖同名文件——若需保留多份，请先切换 `filename_prefix`。
 
 > [!NOTE]
 > **JPEG XL** (`jxl`) 需要可选依赖 `pillow-jxl-plugin`：
