@@ -86,6 +86,86 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     return result * scale + bias
 
 
+_PARTITION_CACHE = {}
+
+
+def _build_partition_map(low_n: int, high_n: int, device):
+    key = (low_n, high_n, device.type if hasattr(device, "type") else "cpu")
+    if key in _PARTITION_CACHE:
+        return _PARTITION_CACHE[key]
+    if high_n < low_n:
+        raise ValueError(f"Partition requires high_n >= low_n, got {high_n} < {low_n}")
+    base = high_n // low_n
+    rem = high_n % low_n
+    counts = torch.full((low_n,), base, dtype=torch.long, device=device)
+    if rem > 0:
+        counts[:rem] += 1
+    map_hi_to_lo = torch.repeat_interleave(torch.arange(low_n, device=device), counts)
+    inv_sqrt = (counts.float().rsqrt())[map_hi_to_lo]
+    _PARTITION_CACHE[key] = (map_hi_to_lo, inv_sqrt, counts)
+    return map_hi_to_lo, inv_sqrt, counts
+
+
+def _reduce_height(x, map_h, inv_sqrt_h, low_h):
+    B, C, Hh, W = x.shape
+    out = torch.zeros((B, C, low_h, W), device=x.device, dtype=x.dtype)
+    weighted = x * inv_sqrt_h.view(1, 1, Hh, 1)
+    out.index_add_(2, map_h, weighted)
+    return out
+
+
+def _expand_height(coeff, map_h, inv_sqrt_h):
+    Hh = map_h.shape[0]
+    return coeff.index_select(2, map_h) * inv_sqrt_h.view(1, 1, Hh, 1)
+
+
+def _reduce_width(x, map_w, inv_sqrt_w, low_w):
+    B, C, H, Ww = x.shape
+    out = torch.zeros((B, C, H, low_w), device=x.device, dtype=x.dtype)
+    weighted = x * inv_sqrt_w.view(1, 1, 1, Ww)
+    out.index_add_(3, map_w, weighted)
+    return out
+
+
+def _expand_width(coeff, map_w, inv_sqrt_w):
+    Ww = map_w.shape[0]
+    return coeff.index_select(3, map_w) * inv_sqrt_w.view(1, 1, 1, Ww)
+
+
+def _project_to_coarse_subspace(x, low_h, low_w, high_h, high_w, device):
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    tmp = _reduce_width(x, map_w, inv_w, low_w)
+    coeff = _reduce_height(tmp, map_h, inv_h, low_h)
+    recon = _expand_height(coeff, map_h, inv_h)
+    recon = _expand_width(recon, map_w, inv_w)
+    return recon
+
+
+def _lift_noise(eps_prev, high_h, high_w):
+    device = eps_prev.device
+    low_h, low_w = eps_prev.shape[-2], eps_prev.shape[-1]
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    out = _expand_height(eps_prev, map_h, inv_h)
+    out = _expand_width(out, map_w, inv_w)
+    return out
+
+
+def _locked_noise_from_prev(eps_prev, target_shape, seed_new):
+    device = eps_prev.device
+    dtype = eps_prev.dtype
+    B, C, H1, W1 = target_shape
+    H0, W0 = eps_prev.shape[-2], eps_prev.shape[-1]
+    g = torch.Generator(device=device)
+    g.manual_seed(seed_new)
+    eta = torch.randn((B, C, H1, W1), generator=g, device=device, dtype=dtype)
+    proj = _project_to_coarse_subspace(eta, H0, W0, H1, W1, device)
+    eta_perp = eta - proj
+    lifted = _lift_noise(eps_prev, H1, W1)
+    return lifted + eta_perp
+
+
 def _adjust_spectral_distribution(noise: torch.Tensor, alpha: float, power_gamma: float = 0.5) -> torch.Tensor:
     B, C, H, W = noise.shape
     u = torch.fft.fftfreq(H, device=noise.device, dtype=noise.dtype).view(H, 1)
@@ -204,7 +284,7 @@ def adjust_latent_size(latent, factor: float):
     _, _, hh, ww = samples.shape
     new_h = max(8, round(hh * factor / 8) * 8)
     new_w = max(8, round(ww * factor / 8) * 8)
-    out = F.interpolate(samples, size=(new_h, new_w), mode='bilinear', align_corners=False)
+    out = F.interpolate(samples, size=(new_h, new_w), mode='bicubic', align_corners=False)
     return {**latent, "samples": out}
 
 
@@ -238,10 +318,13 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
-                   add_noise=True, force_final_denoise=True, extra_noise_freqs=0, extra_noise_scales=0):
+                   add_noise=True, force_final_denoise=True, extra_noise_freqs=0, extra_noise_scales=0,
+                   prev_eps=None):
     latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
+    if prev_eps is not None:
+        x0 = x0 + _locked_noise_from_prev(prev_eps.to(device), x0.shape, noise_seed).to(dtype=x0.dtype)
     eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
                           noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
@@ -257,7 +340,7 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
             noise_seed += 1
             low_noise = _generate_noise(noise_seed, lr_shape, noise_scale=scale,
                                        noise_bias=0.0, dtype=x0.dtype, device=device)
-            eps = eps + F.interpolate(low_noise, size=(H, W), mode='bilinear', align_corners=False)
+            eps = eps + F.interpolate(low_noise, size=(H, W), mode='bicubic', align_corners=False)
     callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
     samples = comfy.sample.sample_custom(
         model, eps, cfg, sampler_obj, sigmas,
@@ -377,6 +460,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 add_noise=add_noise_bool,
                 force_final_denoise=force_denoise_stg1_stg2 or s2_steps == 0,
             )
+            eps_s1 = latent_s1["samples"].clone()
 
             latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
             preproc_pos = positive_stg2 or cond_s1
@@ -395,17 +479,20 @@ class ZImageTurboProgressive(io.ComfyNode):
                 noise_seed=seed + 16,
                 add_noise=False,
                 force_final_denoise=True,
+                prev_eps=eps_s1,
             )
 
             if upscale_factor <= 1.0:
                 latent_s3_in = latent_s2
             else:
                 latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+            eps_s2 = latent_s2["samples"].clone()
             latent_s3 = _stage_denoise(
                 model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
                 noise_seed=696969,
                 add_noise=False,
                 force_final_denoise=not return_noise_bool,
+                prev_eps=eps_s2,
             )
         finally:
             model_sampling.shift = original_shift
