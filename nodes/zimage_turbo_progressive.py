@@ -353,7 +353,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     noise_scale=probe_noise_scale,
                     noise_bias=probe_noise_bias,
                     add_noise=True,
-                    force_final_denoise=True,
+                    force_final_denoise=sigmas3 is None,
                 )
             else:
                 latent_s2 = latent_s1
@@ -365,7 +365,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     noise_seed=696969,
                     noise_scale=probe_noise_scale,
                     noise_bias=probe_noise_bias,
-                    add_noise=True,
+                    add_noise=False,
                     force_final_denoise=not return_noise_bool,
                 )
                 latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
