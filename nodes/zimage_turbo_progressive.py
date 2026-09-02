@@ -38,8 +38,8 @@ _SIGMA_PRESETS_BY_NAME = {
 }
 
 _LATENT_SCALING = {
-    # (stage1_factor, stage2_factor, stage3_factor) relative to input size
-    "fast"   : (0.25, 0.50, 0.75),
+    # X21 latent_sample_scales: (stage0, stage1, stage2) factors; stage3 always = input size
+    "fast"   : (0.25, 0.50, 1.00),
     "quality": (0.50, 0.75, 1.00),
     "none"   : (1.00, 1.00, 1.00),
 }

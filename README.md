@@ -139,7 +139,7 @@ pip install -r requirements.txt
 | `steps` | INT | 8 | 总步数（`8` → `bravo_8`，3–7 → `alpha_N`；>8 回落 bravo_8）|
 | `creativity_mode` | COMBO | `off` | `on`：stage2 scramble + 1 步 coherence preproc；`seed % 3 == 0` 跳过 preproc |
 | `initial_bias` | FLOAT | 0.0 | 非零时跑小尺寸探针补偿 preset sigmas1<1.0 的低频缺口 |
-| `latent_scaling` | COMBO | `fast` | `fast`=(0.25, 0.5, 0.75) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
+| `latent_scaling` | COMBO | `fast` | X21 风格 `(stage0, stage1, stage2)` 缩放因子；`stage3` 永远 = 输入尺寸：`fast`=(0.25, 0.5, 1.0) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
 | `intensity` | FLOAT | 1.0 | 初始噪声 overdose=`(intensity-1)*0.4` + bias level=`intensity*4-1`；1.0 = 无变化 |
 | `refine_enter_sigma` | FLOAT | 0.658 | stage3 sigma tail 切片阈值：≤ 此值的部分参与 stage3；越低 → 细节保留越强 |
 | `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | COMBO | euler / euler / dpmpp_sde | 三阶段独立采样器（`comfy.samplers.SAMPLER_NAMES` 全集）|
@@ -148,7 +148,7 @@ pip install -r requirements.txt
 
 > [!WARNING]
 > - **`return_leftover_noise=enable`**：stage3 终止时 `sigmas3[-1]` 不强制为 0，输出 latent 保留残 σ 噪波，可被下游节点当作起点继续 denoise。
-> - **`latent_scaling`**：X21 max_quality/max_speed/none 三档的 progressive 尺寸链。`fast` 是 X21 默认速度档（首 stage 缩到 1/4），`quality` 是精细档（首 stage 1/2），`none` 跳过尺寸调整（按 stage 配 sampler 自决）。
+> - **`latent_scaling`**：X21 latent_sample_scales 三元组 `(stage0, stage1, stage2)`。`stage3` 永远 = 输入尺寸（不缩）。`fast` 是 X21 默认速度档（首 stage 缩到 1/4），`quality` 是精细档（首 stage 1/2），`none` 跳过尺寸调整（按 stage 配 sampler 自决）。
 > - **`intensity`**：V2 advanced 的 `initial_noise_overdose` + `bias_level` 双参合一。`intensity=1.0` 完全不修改噪声；`intensity=1.5` 注入 +20% 噪声 + 5× 探针偏置。
 > - **`creativity_mode=on`**：stage2 在 denoise 前会**几何 scramble latent** + 跑 1 步 euler preproc——这就是 X21 的 scramble+refine 链路语义。
 

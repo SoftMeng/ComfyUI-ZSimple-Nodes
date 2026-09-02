@@ -44,8 +44,13 @@ def test_get_sigma_preset_clamps_below_3_to_alpha_3():
 def test_latent_scaling_three_modes():
     assert set(_LATENT_SCALING.keys()) == {"fast", "quality", "none"}
     assert _LATENT_SCALING["none"] == (1.0, 1.0, 1.0)
-    assert _LATENT_SCALING["fast"] == (0.25, 0.50, 0.75)
+    assert _LATENT_SCALING["fast"] == (0.25, 0.50, 1.00)
     assert _LATENT_SCALING["quality"] == (0.50, 0.75, 1.00)
+
+
+def test_latent_scaling_stage3_always_one():
+    for name, scales in _LATENT_SCALING.items():
+        assert scales[2] == 1.0, f"{name} stage3 must = input size (1.0), got {scales[2]}"
 
 
 def test_slice_sigmas_at_entry_below_threshold():
