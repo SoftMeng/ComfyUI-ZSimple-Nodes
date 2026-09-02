@@ -81,7 +81,7 @@ def adjust_latent_size(latent, factor: float = 1.0, target_size: tuple[int, int]
         new_w = max(8, round(ww * factor / 8) * 8)
     if new_h == hh and new_w == ww:
         return latent
-    out = comfy.utils.common_upscale(samples, new_w, new_h, "bislerp", "disabled")
+    out = comfy.utils.common_upscale(samples, new_w, new_h, "bilinear", "disabled")
     return {**latent, "samples": out}
 
 
