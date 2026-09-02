@@ -450,8 +450,10 @@ class ZImageTurboProgressive(io.ComfyNode):
                 initial_noise_bias = initial_noise_bias * initial_bias_level
                 initial_noise_scale = 1.0 + 0.2
 
+            latent_s1_in = adjust_latent_size(latent_input, factor=1.0 / (upscale_factor * upscale_factor))
+
             latent_s1 = _stage_denoise(
-                model, latent_input, cond_s1, negative, cfg, sampler1, sigmas1,
+                model, latent_s1_in, cond_s1, negative, cfg, sampler1, sigmas1,
                 noise_seed=seed,
                 noise_scale=initial_noise_scale,
                 noise_bias=initial_noise_bias,
@@ -476,6 +478,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s2 = _stage_denoise(
                     model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
                     noise_seed=seed + 16,
+                    noise_scale=initial_noise_scale,
+                    noise_bias=initial_noise_bias,
                     add_noise=force_denoise_stg1_stg2,
                     force_final_denoise=True,
                 )
@@ -483,10 +487,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s2 = latent_s1
 
             if sigmas3 is not None:
-                if upscale_factor <= 1.0:
-                    latent_s3_in = latent_s2
-                else:
-                    latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
                 stage3_start_from_beginning = True
                 latent_s3 = _stage_denoise(
                     model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
