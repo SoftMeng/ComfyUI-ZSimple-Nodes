@@ -340,6 +340,9 @@ class ZImageTurboProgressive(io.ComfyNode):
             negative = cond_s1
         else:
             negative = []
+        preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
+                     "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
+        scramble_on = creativity_mode == "scrambled"
 
         tilt_entry = next(p for p in SPECTRAL_TILT_PRESETS if p[0] == spectral_tilt)
         _, tilt_stages, alpha_tilting, alpha_sharpness = tilt_entry
@@ -361,7 +364,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         if shift > 0:
             model_sampling.shift = shift
         try:
-            if add_noise_bool and creativity_mode == "scrambled":
+            if add_noise_bool and scramble_on:
                 t = latent_input["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_input = {**latent_input, "samples": t}
@@ -376,9 +379,6 @@ class ZImageTurboProgressive(io.ComfyNode):
             )
 
             latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
-            preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
-                         "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
-            scramble_on = creativity_mode == "scrambled"
             preproc_pos = positive_stg2 or cond_s1
             preproc_neg = cond_s1 if cfg > 0 else []
             if scramble_on:
