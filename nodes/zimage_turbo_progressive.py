@@ -284,7 +284,13 @@ def adjust_latent_size(latent, factor: float):
     _, _, hh, ww = samples.shape
     new_h = max(8, round(hh * factor / 8) * 8)
     new_w = max(8, round(ww * factor / 8) * 8)
-    out = F.interpolate(samples, size=(new_h, new_w), mode='bicubic', align_corners=False)
+    if new_h % hh == 0 and new_w % ww == 0:
+        out = F.interpolate(samples, size=(new_h, new_w), mode='area')
+    else:
+        out = F.interpolate(samples, size=(new_h, new_w), mode='bicubic', align_corners=False)
+        orig_var = samples.var()
+        new_var = out.var().clamp(min=1e-6)
+        out = out * (orig_var / new_var).sqrt()
     return {**latent, "samples": out}
 
 
