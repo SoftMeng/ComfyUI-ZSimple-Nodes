@@ -26,7 +26,6 @@ import latent_preview
 
 SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
 SCHEDULER_NAMES = comfy.samplers.SCHEDULER_NAMES
-CREATIVITY_MODES = ["off", "scrambled", "refined_1", "refined_2", "refined_3"]
 SPECTRAL_TILT_PRESETS = [
     ("none", "", (0.0, 0.0), 1.0),
     ("stage3_H", "3", (-0.3, -0.3), 1.0),
@@ -310,8 +309,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                              tooltip="Stage1 sigma slice start (advanced)."),
                 io.Int.Input("end_step", default=8, min=1, max=10000,
                              tooltip="Stage1 sigma slice end (advanced)."),
-                io.Combo.Input("creativity_mode", options=CREATIVITY_MODES, default="off",
-                                tooltip="off=clean. scrambled=structure variation. refined_N=N-step coherence recovery."),
+                io.Boolean.Input("creativity_mode", default=False, label_on="on", label_off="off",
+                                tooltip="Stage2 scramble + 1-step coherence pre-processing. seed%3==0 disables preproc for higher creativity (X21 behavior)."),
                 io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
                                 tooltip="Latent size multiplier per stage. 2.0=4x, √2=2x, etc."),
                 io.Boolean.Input("detailed_refiner", default=True,
@@ -331,7 +330,7 @@ class ZImageTurboProgressive(io.ComfyNode):
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
                 add_noise: str, return_leftover_noise: str, steps: int,
-                start_step: int, end_step: int, creativity_mode: str,
+                start_step: int, end_step: int, creativity_mode: bool,
                 upscale_factor: float, detailed_refiner: bool, spectral_tilt: str,
                 stage1_sampler: str, stage1_scheduler: str,
                 stage2_sampler: str, stage2_scheduler: str,
@@ -375,9 +374,9 @@ class ZImageTurboProgressive(io.ComfyNode):
         if stage2_scheduler != stage1_scheduler or stage3_scheduler != stage1_scheduler:
             print("[ZImageTurboProgressive] WARNING: per-stage scheduler ignored — sigma preset is hardcoded (V2 advanced mode).")
 
-        preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
-                     "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
-        scramble_on = creativity_mode == "scrambled"
+        high_as_a_kite = (seed % 3) == 0
+        scramble_on = creativity_mode
+        preproc_n = (0 if high_as_a_kite else 1) if creativity_mode else 0
 
         latent_input = {
             **latent_input,

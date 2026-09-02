@@ -11,7 +11,6 @@ from nodes.zimage_turbo_progressive import (
     adjust_latent_size,
     SIGMA_PRESETS_BY_NAME,
     SPECTRAL_TILT_PRESETS,
-    CREATIVITY_MODES,
     ZImageTurboProgressive,
 )
 
@@ -105,5 +104,7 @@ def test_spectral_tilt_presets_5():
         assert len(preset) == 4
 
 
-def test_creativity_modes_5():
-    assert len(CREATIVITY_MODES) == 5
+def test_creativity_mode_is_boolean():
+    schema = ZImageTurboProgressive.define_schema()
+    field = next(i for i in schema.inputs if getattr(i, "name", None) == "creativity_mode")
+    assert getattr(field, "default", None) in (True, False)

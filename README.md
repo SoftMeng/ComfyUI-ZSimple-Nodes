@@ -143,7 +143,7 @@ pip install -r requirements.txt
 > - **per-stage scheduler 实际不起作用**：sigma 由 preset 硬编码（bravo_8 / alpha_N）决定，与用户选的 scheduler 无关。
 > - **`start_step` / `end_step` 不起作用**：sigma 切片由 preset 决定，不走 sigma_step_range。
 | `start_step` / `end_step` | INT | 0 / 8 | 单阶段用 sigma 切片；progressive 时由 latent 接力覆盖 |
-| `creativity_mode` | COMBO | `off` | `off` / `scrambled`（构图变体）/ `refined_1/2/3`（N 步 coherence 恢复）|
+| `creativity_mode` | BOOL | False | Stage2 scramble + 1-step coherence pre-processing。`seed % 3 == 0` 时关 preproc（X21 行为） |
 | `upscale_factor` | FLOAT | 2.0 | 单 stage 倍率；3 stage 总放大 = `factor²` |
 | `detailed_refiner` | BOOL | True | stage3 切 dpmpp_sde 增强高频细节 |
 | `spectral_tilt` | COMBO | `none` | Colored Noise Sampling 频域塑形；5 档预设：`none` / `stage3_H` / `stages12x_H` / `stages12x_l` / `stages123_H` |
