@@ -122,50 +122,39 @@ pip install -r requirements.txt
 
 ### 🎯 ZImageTurboProgressive（菜单：ZSimple-Nodes/sampling）
 
-**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale。Sigma 序列来自 V2 advanced 风格的 **BRAVO/ALPHA hardcoded preset**（每 stage 独立、不连续 sigma），latent 接力 = 前 stage 输出作下一 stage 输入。设计定稿见 `docs/research/2026-zimage-turbo-fusion-plan.md`，接力方式参考 `ComfyUI-ZImagePowerNodes/zsampler_turbo_2_advanced.py`。
+**用途**：Z-Image Turbo 专用 3 阶段 progressive sampling。Sigma 序列来自 **BRAVO/ALPHA hardcoded preset**（每 stage 独立、不连续 sigma），尺寸链由 `latent_scaling` 三档控制。算法参考 `ComfyUI-ZImagePowerNodes/zsampler_turbo_core.py` 与 `zsampler_turbo_X21.py`。
 
-#### 核心输入
+#### 输入（17 项）
 
 | 参数 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `latent_input` | LATENT | — | Empty Latent 输出 |
 | `model` | MODEL | — | Z-Image Turbo loader 输出 |
-| `positive` | CONDITIONING | — | 主条件 |
-| `positive_stg2` / `positive_stg3` | CONDITIONING（可选） | — | stage 2/3 单独条件；留空回退 positive |
-| `cfg` | FLOAT | 1.0 | Z-Image Turbo 是 CFG-distilled，推荐 1.0 |
-| `seed` | INT | 0 | stage1 用此 seed；stage2/3 用 `seed+16`、`696969` 派生 |
-| `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；0 禁用 |
+| `positive` | CONDITIONING | — | 单 prompt（所有 stage 共用）|
+| `cfg` | FLOAT | 1.0 | Z-Image Turbo 是 CFG-distilled，推荐 1.0（positive == negative）|
+| `seed` | INT | 0 | stage1 用此 seed；stage2 用 `seed+16`，stage3 用 `696969` 派生 |
+| `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；`0` 禁用 |
 | `add_noise` | COMBO | `enable` | stage1 是否加噪；inpainting 设为 `disable` |
-| `return_leftover_noise` | COMBO | `disable` | stage3 是否保留残噪（链式下游用） |
-| `steps` | INT | 8 | 总步数（8 → bravo_8，3-7 → alpha_N） |
+| `return_leftover_noise` | COMBO | `disable` | stage3 是否保留残噪（链式下游用）—— 见下方说明 |
+| `steps` | INT | 8 | 总步数（`8` → `bravo_8`，3–7 → `alpha_N`；>8 回落 bravo_8）|
+| `creativity_mode` | COMBO | `off` | `on`：stage2 scramble + 1 步 coherence preproc；`seed % 3 == 0` 跳过 preproc |
+| `initial_bias` | FLOAT | 0.0 | 非零时跑小尺寸探针补偿 preset sigmas1<1.0 的低频缺口 |
+| `latent_scaling` | COMBO | `fast` | `fast`=(0.25, 0.5, 0.75) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
+| `intensity` | FLOAT | 1.0 | 初始噪声 overdose=`(intensity-1)*0.4` + bias level=`intensity*4-1`；1.0 = 无变化 |
+| `refine_enter_sigma` | FLOAT | 0.658 | stage3 sigma tail 切片阈值：≤ 此值的部分参与 stage3；越低 → 细节保留越强 |
+| `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | COMBO | euler / euler / dpmpp_sde | 三阶段独立采样器（`comfy.samplers.SAMPLER_NAMES` 全集）|
+
+#### 关键机制说明
 
 > [!WARNING]
-> - **per-stage scheduler 实际不起作用**：sigma 由 preset 硬编码（bravo_8 / alpha_N）决定，与用户选的 scheduler 无关。
-> - **`start_step` / `end_step` 不起作用**：sigma 切片由 preset 决定，不走 sigma_step_range。
-| `start_step` / `end_step` | INT | 0 / 8 | 单阶段用 sigma 切片；progressive 时由 latent 接力覆盖 |
-| `creativity_mode` | BOOL | False | Stage2 scramble + 1-step coherence pre-processing。`seed % 3 == 0` 时关 preproc（X21 行为） |
-| `upscale_factor` | FLOAT | 2.0 | 单 stage 倍率；3 stage 总放大 = `factor²` |
-| `detailed_refiner` | BOOL | True | stage3 切 dpmpp_sde 增强高频细节 |
-| `spectral_tilt` | COMBO | `none` | Colored Noise Sampling 频域塑形；5 档预设：`none` / `stage3_H` / `stages12x_H` / `stages12x_l` / `stages123_H` |
-
-#### 3 阶段独立参数
-
-| 参数 | stage1 | stage2 | stage3 |
-|---|---|---|---|
-| `sampler` | `euler` | `euler` | `dpmpp_sde` |
-| `scheduler` | `normal` | `normal` | `normal` |
-
-可选 8 个 sampler：`euler` / `euler_ancestral` / `dpmpp_2m` / `dpmpp_sde` / `dpmpp_2m_sde` / `dpmpp_3m_sde` / `uni_pc` / `ddim`
-可选 6 个 scheduler：`normal` / `karras` / `exponential` / `sgm_uniform` / `ddim_uniform` / `beta`
+> - **`return_leftover_noise=enable`**：stage3 终止时 `sigmas3[-1]` 不强制为 0，输出 latent 保留残 σ 噪波，可被下游节点当作起点继续 denoise。
+> - **`latent_scaling`**：X21 max_quality/max_speed/none 三档的 progressive 尺寸链。`fast` 是 X21 默认速度档（首 stage 缩到 1/4），`quality` 是精细档（首 stage 1/2），`none` 跳过尺寸调整（按 stage 配 sampler 自决）。
+> - **`intensity`**：V2 advanced 的 `initial_noise_overdose` + `bias_level` 双参合一。`intensity=1.0` 完全不修改噪声；`intensity=1.5` 注入 +20% 噪声 + 5× 探针偏置。
+> - **`creativity_mode=on`**：stage2 在 denoise 前会**几何 scramble latent** + 跑 1 步 euler preproc——这就是 X21 的 scramble+refine 链路语义。
 
 #### 输出
 
 - `latent_output`：LATENT（denoise 完成后的 final latent）
-
-> [!WARNING]
-> - **shift 默认 3.5 与 Z-Image Turbo 官方推荐一致**；其它值（特别是 ≥4）会导致生成图"melted/smeared"（社区实测）。
-> - **upscale_factor > 1.0** 会让 latent 输出尺寸 = 输入 × `factor²`（例：factor=2 → 4× 放大）。如需保持输入尺寸，factor=1.0。
-> - **return_leftover_noise=enable** 会让 stage3 保留残 σ 噪波，可能让下游节点处理异常——确认下游需要时再启用。
 
 ---
 

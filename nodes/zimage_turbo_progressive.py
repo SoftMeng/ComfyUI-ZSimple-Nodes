@@ -1,12 +1,15 @@
-"""Z-Image Turbo 3-stage progressive upscaling sampler.
+"""Z-Image Turbo 3-stage progressive sampling.
 
-Architecture mirrors ComfyUI-ZImagePowerNodes/zsampler_turbo_core for correctness:
-- 3-stage sigma slicing (alpha preset pattern)
-- stage2 scramble (creativity_mode = scrambled)
-- stage2 preproc with extra noise injection (refined_1/2/3)
-- stage3 dpmpp_sde refiner
-- SpectralAdjustedSampler wrapper for spectral tilt
-- noise_scale / noise_bias for initial noise calibration
+Architecture mirrors ComfyUI-ZImagePowerNodes/zsampler_turbo_core:
+- BRAVO/ALPHA hardcoded sigma presets (author-tuned; empirically
+  beat any scheduler formula at 8-step) — schedule option removed.
+- Stage sizes follow X21 max_quality gentle progression (driven by
+  the latent_scaling IO: fast | quality | none).
+- Stage2 scramble + 1-step coherence preproc (creativity_mode
+  boolean, X21-style). seed%3==0 disables preproc for higher
+  creativity.
+- Probe-calibrated initial noise bias to compensate for preset
+  sigmas starting below 1.0.
 """
 from typing import Any
 
@@ -19,28 +22,80 @@ import comfy.model_management
 import comfy.sample
 import comfy.samplers
 import comfy.utils
-from comfy.samplers import KSAMPLER, ksampler, sampler_object
 
 import latent_preview
 
 
 SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
-SCHEDULER_NAMES = comfy.samplers.SCHEDULER_NAMES
-SPECTRAL_TILT_PRESETS = [
-    ("none", "", (0.0, 0.0), 1.0),
-    ("stage3_H", "3", (-0.3, -0.3), 1.0),
-    ("stages12x_H", "12x", (0.2, -0.9), 0.7),
-    ("stages12x_l", "12x", (0.2, -2.0), 0.8),
-    ("stages123_H", "123", (0.2, -0.9), 0.7),
-]
+
+_SIGMA_PRESETS_BY_NAME = {
+    "alpha_3" : [(0.991, 0.920), None, None],
+    "alpha_4" : [(0.991, 0.920, 0.500), None, None],
+    "alpha_5" : [(0.991, 0.920, 0.793, 0.500), None, None],
+    "alpha_6" : [(0.991, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
+    "alpha_7" : [(0.991, 0.980, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
+    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.300), (0.658, 0.302, 0.0)],
+}
+
+_LATENT_SCALING = {
+    # (stage1_factor, stage2_factor, stage3_factor) relative to input size
+    "fast"   : (0.25, 0.50, 0.75),
+    "quality": (0.50, 0.75, 1.00),
+    "none"   : (1.00, 1.00, 1.00),
+}
 
 
-def _stage_split(total_steps: int) -> tuple[int, int, int]:
-    s = max(2, total_steps)
-    s1 = max(1, round(s * 0.25))
-    s3 = max(1, round(s * 0.25))
-    s2 = max(1, s - s1 - s3)
-    return s1, s2, s3
+def _get_sigma_preset(steps: int):
+    clamped = max(3, min(steps, 7))
+    return _SIGMA_PRESETS_BY_NAME[f"alpha_{clamped}"] if clamped <= 7 else _SIGMA_PRESETS_BY_NAME["bravo_8"]
+
+
+def _slice_sigmas_at_entry(sigmas, enter_sigma: float):
+    """Return tail of `sigmas` at-or-below enter_sigma (ZTPLU semantics)."""
+    if sigmas is None or sigmas.numel() == 0:
+        return sigmas
+    if enter_sigma is None:
+        return sigmas
+    for i, s in enumerate(sigmas):
+        if float(s) <= float(enter_sigma):
+            return sigmas[i:]
+    return sigmas
+
+
+def _coerce_latent(latent):
+    if isinstance(latent, dict):
+        return latent
+    if torch.is_tensor(latent):
+        return {"samples": latent}
+    raise TypeError(f"latent must be dict or Tensor, got {type(latent).__name__}")
+
+
+def adjust_latent_size(latent, factor: float):
+    latent = _coerce_latent(latent)
+    if factor == 1.0:
+        return latent
+    samples = latent["samples"]
+    _, _, hh, ww = samples.shape
+    new_h = max(8, round(hh * factor / 8) * 8)
+    new_w = max(8, round(ww * factor / 8) * 8)
+    out = comfy.utils.common_upscale(samples, new_w, new_h, "bislerp", "disabled")
+    return {**latent, "samples": out}
+
+
+def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
+    g = torch.Generator().manual_seed(seed)
+    noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
+    if isinstance(noise_scale, torch.Tensor):
+        noise = noise * noise_scale.to(device=device, dtype=noise.dtype)
+    elif noise_scale != 1.0:
+        noise = noise * noise_scale
+    if isinstance(noise_bias, torch.Tensor):
+        noise = noise + noise_bias.to(device=device, dtype=noise.dtype)
+    elif noise_bias != 0.0:
+        bias = torch.full((shape[0], shape[1], 1, 1), float(noise_bias),
+                          dtype=dtype, device=device)
+        noise = noise + bias
+    return noise
 
 
 def _scramble_counts(seed: int) -> tuple[int, int, int, int]:
@@ -62,21 +117,23 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     anchors = ('left', 'top', 'right', 'bottom')
     for anchor_idx, anchor in enumerate(anchors):
         for _ in range(abs(counts[anchor_idx])):
-            h_start = 0 if anchor in ('left', 'top') else H // 2
-            w_start = 0 if anchor in ('left', 'bottom') else W // 2
             fh = int(H * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
             fw = int(W * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
             fh = max(8, min(fh, H))
             fw = max(8, min(fw, W))
-            fy = torch.randint(0, max(1, H - fh + 1), (1,), generator=generator).item()
-            fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
+            if anchor in ('left', 'right'):
+                fy = torch.randint(0, max(1, H - fh + 1), (1,), generator=generator).item()
+                fx = 0 if anchor == 'left' else W - fw
+            else:
+                fy = 0 if anchor == 'top' else H - fh
+                fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
             frag = x[:, :, fy:fy + fh, fx:fx + fw].clone()
             if counts[anchor_idx] < 0:
                 if torch.rand(1, generator=generator).item() > 0.5:
                     frag = torch.flip(frag, dims=[-1])
                 if torch.rand(1, generator=generator).item() > 0.5:
                     frag = torch.flip(frag, dims=[-2])
-            frag_resized = F.interpolate(frag, size=(H, W), mode='bilinear', align_corners=False)
+            frag_resized = F.interpolate(frag, size=(H, W), mode='bicubic', align_corners=False)
             result = result + frag_resized
     r_scale = result.std(dim=(2, 3), keepdim=True).clamp(min=1e-6)
     r_bias = result.mean(dim=(2, 3), keepdim=True)
@@ -85,119 +142,33 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     return result * scale + bias
 
 
-def _adjust_spectral_distribution(noise: torch.Tensor, alpha: float, power_gamma: float = 0.5) -> torch.Tensor:
-    B, C, H, W = noise.shape
-    u = torch.fft.fftfreq(H, device=noise.device, dtype=noise.dtype).view(H, 1)
-    v = torch.fft.fftfreq(W, device=noise.device, dtype=noise.dtype).view(1, W)
-    grid = u ** 2 + v ** 2
-    grid[0, 0] = 1.0
-    filt = grid ** (power_gamma * alpha)
-    n_fft = torch.fft.fft2(noise, dim=(-2, -1))
-    n_fft = n_fft / filt
-    filtered = torch.fft.ifft2(n_fft, dim=(-2, -1)).real
-    std = filtered.std(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
-    return filtered / std
-
-
-class SpectralAdjustedSampler(KSAMPLER):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0), *, inner_sampler: KSAMPLER):
-        self._inner = inner_sampler
-        self._alpha = alpha_tilting
-        self._sharp = alpha_sharpness
-        self._range = sigma_range
-        super().__init__(
-            sampler_function=(lambda *a, **kw: self._run(*a, **kw)),
-            extra_options=inner_sampler.extra_options.copy(),
-            inpaint_options=inner_sampler.inpaint_options.copy(),
-        )
-
-    def _run(self, model, noise, sigmas, *args, **kwargs):
-        base_noise_sampler = kwargs.pop("noise_sampler", None) or (lambda *a, **kw: torch.randn_like(noise))
-        sig = float(sigmas[0].mean().detach().cpu())
-        if isinstance(self._alpha, (list, tuple)) and len(self._alpha) == 2:
-            s0, s1 = self._range
-            r = s1 - s0
-            prog = max(0.0, min(1.0, (sig - s0) / r)) if r != 0 else 1.0
-            alpha = self._alpha[0] + (prog ** self._sharp) * (self._alpha[1] - self._alpha[0])
-        else:
-            alpha = float(self._alpha)
-        custom = (lambda *a, **kw: _adjust_spectral_distribution(
-            base_noise_sampler(sig, *a, **kw), alpha=alpha))
-        return self._inner.sampler_function(model, noise, sigmas, *args,
-                                            noise_sampler=custom, **kwargs)
-
-
-class EulerAss(SpectralAdjustedSampler):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0)):
-        super().__init__(alpha_tilting, alpha_sharpness, sigma_range,
-                         inner_sampler=ksampler("euler_ancestral"))
-
-
-class DPMPP_SDEss(SpectralAdjustedSampler):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0)):
-        super().__init__(alpha_tilting, alpha_sharpness, sigma_range,
-                         inner_sampler=ksampler("dpmpp_sde"))
-
-
-def _resolve_sampler(name_or):
-    if isinstance(name_or, KSAMPLER):
-        return name_or
-    if not isinstance(name_or, str):
-        return sampler_object("euler")
-    if name_or == "euler_ass":
-        return EulerAss()
-    if name_or == "dpmpp_sde_ss":
-        return DPMPP_SDEss()
-    return sampler_object(name_or)
-
-
-def _resolve_spectral_for_stage(stage_idx: int, stage: str, tilt_stages: str,
-                                 alpha_tilting, alpha_sharpness,
-                                 base_name: str) -> KSAMPLER:
-    if str(stage_idx + 1) not in tilt_stages:
-        return _resolve_sampler(base_name)
-    tilt_sampler = DPMPP_SDEss if base_name == "dpmpp_sde" or "dpmpp_sde" in base_name else EulerAss
-    return tilt_sampler(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
-
-
-def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
-    g = torch.Generator().manual_seed(seed)
-    noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
-    if isinstance(noise_scale, torch.Tensor):
-        noise = noise * noise_scale.to(device=device, dtype=noise.dtype)
-    elif noise_scale != 1.0:
-        noise = noise * noise_scale
-    if isinstance(noise_bias, torch.Tensor):
-        noise = noise + noise_bias.to(device=device, dtype=noise.dtype)
-    elif noise_bias != 0.0:
-        bias = torch.full((shape[0], shape[1], 1, 1), float(noise_bias),
-                          dtype=dtype, device=device)
-        noise = noise + bias
-    return noise
+def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
+                     sampler, noise_seed):
+    if preproc_steps <= 0:
+        return latent
+    latents = latent["samples"]
+    sigmas = torch.tensor((0.949, 0.0), dtype=latents.dtype, device=latents.device)
+    out_dict = _stage_denoise(
+        model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
+        sampler, sigmas,
+        noise_seed=noise_seed,
+        noise_scale=1.0, noise_bias=0.0,
+        add_noise=True,
+        force_final_denoise=True,
+    )
+    return {"samples": out_dict["samples"]}
 
 
 def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
-                                     sigma_first, seed, sample_hw=None, reference_tensor=None):
-    """Probe-run pure noise at [1.0, sigma_first] on a small latent,
-    return per-channel (bias, scale) of the denoised result.
-
-    bravo/alpha presets start below sigma=1.0 (0.991), leaving a
-    systematic low-frequency gap in the first denoise step. The
-    probe's channel statistics calibrate the initial noise bias.
-    """
+                                     sigma_first, seed, sample_hw, reference_tensor):
     dtype = reference_tensor.dtype
     B, C = reference_tensor.shape[0], reference_tensor.shape[1]
-    if sample_hw is None:
-        H, W = reference_tensor.shape[-2:]
-    else:
-        H, W = sample_hw
+    H, W = sample_hw
     probe = torch.zeros((B, C, H, W), dtype=dtype, layout=reference_tensor.layout, device="cpu")
     sigmas = torch.tensor([1.0, float(sigma_first)], dtype=torch.float32)
     out = _stage_denoise(
         model, {"samples": probe}, positive, negative, 1.0, sampler_obj, sigmas,
-        noise_seed=seed,
-        add_noise=True,
-        force_final_denoise=False,
+        noise_seed=seed, add_noise=True, force_final_denoise=False,
     )
     result = out["samples"].to(dtype)
     bias = result.mean(dim=(2, 3), keepdim=True)
@@ -205,101 +176,20 @@ def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
     return bias, scale
 
 
-_SIGMA_PRESETS_BY_NAME = {
-    "alpha_3" : [(0.991, 0.920), None, None],
-    "alpha_4" : [(0.991, 0.920, 0.500), None, None],
-    "alpha_5" : [(0.991, 0.920, 0.793, 0.500), None, None],
-    "alpha_6" : [(0.991, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "alpha_7" : [(0.991, 0.980, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "alpha_8" : [(0.991, 0.980, 0.920, 0.935, 0.900, 0.875, 0.750, 0.300), None, None],
-    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.300), (0.658, 0.302, 0.0)],
-}
-
-
-def _get_sigma_preset(steps: int):
-    clamped = max(3, min(steps, 9))
-    if clamped <= 7:
-        return _SIGMA_PRESETS_BY_NAME[f"alpha_{clamped}"]
-    if clamped == 8:
-        return _SIGMA_PRESETS_BY_NAME["bravo_8"]
-    return _SIGMA_PRESETS_BY_NAME["alpha_8"]
-
-
-def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
-    model_sampling = model.get_model_object("model_sampling")
-    discard_set = ("dpm_2", "dpm_2_ancestral", "uni_pc", "uni_pc_bh2")
-    do_discard = sampler_name in discard_set
-    calc_steps = steps + 1 if do_discard else steps
-    sigmas = comfy.samplers.calculate_sigmas(model_sampling, scheduler_name, calc_steps)
-    if do_discard and sigmas is not None and sigmas.numel() >= 2:
-        sigmas = torch.cat([sigmas[:-2], sigmas[-1:]])
-    return sigmas
-
-
-def adjust_latent_size(latent, factor: float):
-    if isinstance(latent, torch.Tensor):
-        latent = {"samples": latent}
-    if factor == 1.0:
-        return latent
-    samples = latent["samples"]
-    _, _, hh, ww = samples.shape
-    new_h = max(8, round(hh * factor / 8) * 8)
-    new_w = max(8, round(ww * factor / 8) * 8)
-    out = comfy.utils.common_upscale(samples, new_w, new_h, "bislerp", "disabled")
-    return {**latent, "samples": out}
-
-
-def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
-                     sampler, noise_seed, noise_scale, noise_bias,
-                     extra_noise_freqs=(1024,), extra_noise_scales=(0.8,)):
-    if preproc_steps <= 0:
-        return latent, False
-    latents = latent["samples"]
-    add_noise = True
-    for i in range(preproc_steps):
-        sigmas = torch.tensor((0.949, 0.0)) if i == 0 else None
-        if sigmas is None:
-            sigmas = comfy.samplers.calculate_sigmas(
-                model.get_model_object("model_sampling"), "normal", 2)
-        freqs = extra_noise_freqs if i == 0 else (0,)
-        scales = extra_noise_scales if i == 0 else (0,)
-        latents = _stage_denoise(
-            model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
-            sampler, sigmas,
-            noise_seed=noise_seed + i,
-            noise_scale=noise_scale, noise_bias=noise_bias,
-            add_noise=add_noise,
-            force_final_denoise=True,
-            extra_noise_freqs=freqs, extra_noise_scales=scales,
-        )["samples"]
-    return {"samples": latents}, add_noise
-
-
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
-                   add_noise=True, force_final_denoise=True, extra_noise_freqs=0, extra_noise_scales=0):
-    if isinstance(latent, torch.Tensor):
-        latent = {"samples": latent}
-    elif "samples" not in latent:
-        raise TypeError(f"latent must be a dict with 'samples' or Tensor, got {type(latent).__name__}")
+                   add_noise=True, force_final_denoise=False):
+    latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
+    sigmas = sigmas.to(device) if isinstance(sigmas, torch.Tensor) else torch.tensor(sigmas, dtype=x0.dtype, device=device)
     eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
                           noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
-    B, C, H, W = x0.shape
-    if extra_noise_freqs and extra_noise_scales:
-        freqs = extra_noise_freqs if isinstance(extra_noise_freqs, tuple) else (extra_noise_freqs,)
-        scales = extra_noise_scales if isinstance(extra_noise_scales, tuple) else (extra_noise_scales,)
-        for freq, scale in zip(freqs, scales):
-            if scale <= 0.0:
-                continue
-            lr_shape = (B, C, max(1, H * freq // 1024), max(1, W * freq // 1024))
-            noise_seed += 1
-            low_noise = _generate_noise(noise_seed, lr_shape, noise_scale=scale,
-                                       noise_bias=0.0, dtype=x0.dtype, device=device)
-            eps = eps + F.interpolate(low_noise, size=(H, W), mode='bilinear', align_corners=False)
+    if force_final_denoise and sigmas[-1] != 0:
+        sigmas = sigmas.clone()
+        sigmas[-1] = 0
     callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
     samples = comfy.sample.sample_custom(
         model, eps, cfg, sampler_obj, sigmas,
@@ -319,85 +209,54 @@ class ZImageTurboProgressive(io.ComfyNode):
             node_id="ZImageTurboProgressive",
             display_name="Z-Image Turbo Progressive",
             category="ZSimple-Nodes/sampling",
-            description="3-stage progressive upscale (2:4:2 step split) for Z-Image Turbo with shift, spectral tilt, creativity, detailed_refiner.",
+            description="3-stage progressive sampler for Z-Image Turbo with BRAVO/ALPHA sigma presets, X21 gentle size progression, and probe-calibrated initial bias.",
             inputs=[
                 io.Latent.Input("latent_input"),
                 io.Model.Input("model"),
                 io.Conditioning.Input("positive"),
-                io.Conditioning.Input("positive_stg2", optional=True),
-                io.Conditioning.Input("positive_stg3", optional=True),
                 io.Float.Input("cfg", default=1.0, min=0.0, max=15.0, step=0.1,
                                 tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0 (positive == negative)."),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
-                             tooltip="Seed for stage1. Stage2/3 use seed+16, 696969 (fixed)."),
+                             tooltip="Seed for stage1. Stage2/3 use deterministic offsets (seed+16, 696969)."),
                 io.Float.Input("shift", default=3.5, min=0.0, max=100.0, step=0.01,
-                                tooltip="Logit-normal time shift (ModelSamplingSD3 style). 0 disables. Z-Image Turbo ≈3.5."),
-                io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
-                                tooltip="Initial noise bias level. Non-zero runs a small probe sample to calibrate "
-                                        "per-channel low-frequency bias (needed because preset sigmas start <1.0). "
-                                        "Positive = vivid colors; negative = muted."),
+                                tooltip="Logit-normal time shift. 0 disables. Z-Image Turbo ≈3.5."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
                 io.Combo.Input("return_leftover_noise", options=["disable", "enable"], default="disable",
-                                tooltip="Stage3 leave residual sigma noise in output (for downstream nodes)."),
+                                tooltip="Stage3 leaves residual sigma noise in the output latent for downstream nodes."),
                 io.Int.Input("steps", default=8, min=2, max=64,
-                             tooltip="Total denoise steps, split 2:4:2 across 3 stages."),
-                io.Int.Input("start_step", default=0, min=0, max=10000,
-                             tooltip="Stage1 sigma slice start (advanced)."),
-                io.Int.Input("end_step", default=8, min=1, max=10000,
-                             tooltip="Stage1 sigma slice end (advanced)."),
-                io.Boolean.Input("creativity_mode", default=False, label_on="on", label_off="off",
-                                tooltip="Stage2 scramble + 1-step coherence pre-processing. seed%3==0 disables preproc for higher creativity (X21 behavior)."),
-                io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
-                                tooltip="Legacy. Stage size chain now uses X21's fixed gentle progression "
-                                        "(0.5 -> 0.75 -> 1.0 of input size); this value no longer drives resize. "
-                                        "Output size always equals input latent size."),
-                io.Boolean.Input("detailed_refiner", default=True,
-                                 tooltip="Stage3 switches to dpmpp_sde for high-freq detail recovery."),
-                io.Combo.Input("spectral_tilt", options=[p[0] for p in SPECTRAL_TILT_PRESETS], default="none",
-                                tooltip="Colored Noise Sampling style freq-domain noise shaping."),
+                             tooltip="Total denoise steps. 8 selects bravo_8; 3-7 selects alpha_N; >8 clamps to alpha_8."),
+                io.Combo.Input("creativity_mode", options=["off", "on"], default="off",
+                                tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
+                io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
+                                tooltip="Additive initial noise bias. Non-zero runs a small probe to compute per-channel low-frequency calibration."),
+                io.Combo.Input("latent_scaling", options=list(_LATENT_SCALING.keys()), default="fast",
+                                tooltip="Stage size chain. fast=(0.25,0.5,0.75) quality=(0.5,0.75,1.0) none=(1,1,1). X21 max_quality/fast/max."),
+                io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
+                                tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change."),
+                io.Float.Input("refine_enter_sigma", default=0.658, min=0.0, max=2.0, step=0.05,
+                                tooltip="Stage3 entry sigma — slices sigmas3 tail at ≤ this value. Lower = more detail preservation."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
-                io.Combo.Input("stage1_scheduler", options=SCHEDULER_NAMES, default="normal"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
-                io.Combo.Input("stage2_scheduler", options=SCHEDULER_NAMES, default="normal"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
-                io.Combo.Input("stage3_scheduler", options=SCHEDULER_NAMES, default="normal"),
             ],
             outputs=[io.Latent.Output("latent_output")],
         )
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
-                initial_bias: float,
                 add_noise: str, return_leftover_noise: str, steps: int,
-                start_step: int, end_step: int, creativity_mode: bool,
-                upscale_factor: float, detailed_refiner: bool, spectral_tilt: str,
-                stage1_sampler: str, stage1_scheduler: str,
-                stage2_sampler: str, stage2_scheduler: str,
-                stage3_sampler: str, stage3_scheduler: str,
-                positive: list | None = None,
-                positive_stg2: list | None = None,
-                positive_stg3: list | None = None) -> io.NodeOutput:
+                creativity_mode: str, initial_bias: float, latent_scaling: str,
+                intensity: float, refine_enter_sigma: float,
+                stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
+                positive: list | None = None) -> io.NodeOutput:
 
-        s1_steps, s2_steps, s3_steps = _stage_split(steps)
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
-        cond_s1 = positive or []
-        cond_s2 = positive_stg2 or cond_s1
-        cond_s3 = positive_stg3 or cond_s2
-        if cfg > 0:
-            negative = cond_s1
-        else:
-            negative = []
+        negative = positive or [] if cfg > 0 else []
+        cond = positive or []
 
-        tilt_entry = next(p for p in SPECTRAL_TILT_PRESETS if p[0] == spectral_tilt)
-        _, tilt_stages, alpha_tilting, alpha_sharpness = tilt_entry
-
-        sampler1 = _resolve_spectral_for_stage(0, "stage1", tilt_stages, alpha_tilting, alpha_sharpness, stage1_sampler)
-        sampler2 = _resolve_spectral_for_stage(1, "stage2", tilt_stages, alpha_tilting, alpha_sharpness, stage2_sampler)
-        s3_base = "dpmpp_sde" if detailed_refiner else stage3_sampler
-        sampler3 = _resolve_spectral_for_stage(2, "stage3", tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
-
+        s1_factor, s2_factor, s3_factor = _LATENT_SCALING[latent_scaling]
         sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps)
 
         def _to_tensor(tup):
@@ -408,16 +267,21 @@ class ZImageTurboProgressive(io.ComfyNode):
         sigmas1 = _to_tensor(sigmas1_tuple)
         sigmas2 = _to_tensor(sigmas2_tuple)
         sigmas3 = _to_tensor(sigmas3_tuple)
+        if sigmas3 is not None and refine_enter_sigma > 0:
+            sigmas3 = _slice_sigmas_at_entry(sigmas3, refine_enter_sigma)
         if sigmas1 is None or sigmas1.numel() < 2:
             print("[ZImageTurboProgressive] ERROR: sigma preset returned no stage1 sigmas.")
             return io.NodeOutput(latent_input)
-        if stage2_scheduler != stage1_scheduler or stage3_scheduler != stage1_scheduler:
-            print("[ZImageTurboProgressive] WARNING: per-stage scheduler ignored — sigma preset is hardcoded (V2 advanced mode).")
 
-        high_as_a_kite = (seed % 3) == 0
-        scramble_on = creativity_mode
-        preproc_n = (0 if high_as_a_kite else 1) if creativity_mode else 0
-        initial_bias_level = min(max(20 * initial_bias, -10.0), 10.0)
+        noise_overdose = (intensity - 1.0) * 0.4
+        noise_bias_level_from_intensity = intensity * 4 - 1
+        initial_noise_scale = 1.0 + noise_overdose
+        initial_bias_level = min(max(20.0 * initial_bias + noise_bias_level_from_intensity,
+                                    -10.0), 10.0)
+
+        sampler1 = comfy.samplers.sampler_object(stage1_sampler)
+        sampler2 = comfy.samplers.sampler_object(stage2_sampler)
+        sampler3 = comfy.samplers.sampler_object(stage3_sampler)
 
         latent_input = {
             **latent_input,
@@ -428,75 +292,74 @@ class ZImageTurboProgressive(io.ComfyNode):
         original_shift = getattr(model_sampling, "shift", None)
         if shift > 0:
             model_sampling.shift = shift
+
         try:
-            if add_noise_bool and scramble_on:
+            creativity_on = creativity_mode == "on"
+            high_as_a_kite = (seed % 3) == 0
+            scramble_on = creativity_on
+            preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
+
+            probe_noise_bias = torch.zeros(0, device=model.load_device)
+            probe_noise_scale = initial_noise_scale
+            if initial_bias_level != 0 and add_noise_bool and sigmas1 is not None:
+                probe_hw = (min(64, latent_input["samples"].shape[-2]),
+                            min(64, latent_input["samples"].shape[-1]))
+                pbias, pscale = _estimate_initial_noise_features(
+                    model, cond, negative, sampler1,
+                    sigma_first=float(sigmas1[0].item() if hasattr(sigmas1[0], "item") else sigmas1[0]),
+                    seed=seed, sample_hw=probe_hw,
+                    reference_tensor=latent_input["samples"],
+                )
+                probe_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
+                probe_noise_bias = probe_noise_bias * initial_bias_level
+
+            if add_noise_bool and creativity_on:
                 t = latent_input["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_input = {**latent_input, "samples": t}
 
-            size_changed_s1_s2 = True
-            force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on or size_changed_s1_s2
-
-            initial_noise_scale = 1.0
-            initial_noise_bias = 0.0
-            if add_noise_bool and initial_bias_level != 0:
-                probe_hw = (min(64, latent_input["samples"].shape[-2]),
-                            min(64, latent_input["samples"].shape[-1]))
-                pbias, pscale = _estimate_initial_noise_features(
-                    model, cond_s1, negative, sampler1,
-                    sigma_first=sigmas1[0], seed=seed,
-                    sample_hw=probe_hw,
-                    reference_tensor=latent_input["samples"],
-                )
-                initial_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
-                initial_noise_bias = initial_noise_bias * initial_bias_level
-                initial_noise_scale = 1.0 + 0.2
-
-            # X21-style gentle geometric progression (max_quality: .50/.75/1.0)
-            # avoids 2x resize jumps that leave 4px-period stripe artifacts.
-            latent_s1_in = adjust_latent_size(latent_input, factor=0.5)
+            latent_s1_in = adjust_latent_size(latent_input, factor=s1_factor)
 
             latent_s1 = _stage_denoise(
-                model, latent_s1_in, cond_s1, negative, cfg, sampler1, sigmas1,
+                model, latent_s1_in, cond, negative, cfg, sampler1, sigmas1,
                 noise_seed=seed,
-                noise_scale=initial_noise_scale,
-                noise_bias=initial_noise_bias,
+                noise_scale=probe_noise_scale,
+                noise_bias=probe_noise_bias,
                 add_noise=add_noise_bool,
-                force_final_denoise=force_denoise_stg1_stg2 or sigmas2 is None,
+                force_final_denoise=True,
             )
 
             if sigmas2 is not None:
-                latent_s2_in = adjust_latent_size(latent_s1, factor=1.5)
-                preproc_pos = positive_stg2 or cond_s1
-                preproc_neg = cond_s1 if cfg > 0 else []
-                if scramble_on:
+                latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+                if creativity_on:
                     t = latent_s2_in["samples"]
                     t = _scramble_tensor(t, _scramble_counts(seed), seed)
                     latent_s2_in = {**latent_s2_in, "samples": t}
                 if preproc_n > 0:
-                    latent_s2_in, _ = _stage2_preproc(
-                        model, latent_s2_in, cfg, preproc_n, preproc_pos,
-                        sampler2, seed + 16, 1.0, 0.0,
+                    latent_s2_in = _stage2_preproc(
+                        model, latent_s2_in, cfg, preproc_n, cond,
+                        sampler2, seed + 16,
                     )
 
                 latent_s2 = _stage_denoise(
-                    model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
+                    model, latent_s2_in, cond, negative, cfg, sampler2, sigmas2,
                     noise_seed=seed + 16,
-                    noise_scale=initial_noise_scale,
-                    noise_bias=initial_noise_bias,
-                    add_noise=force_denoise_stg1_stg2,
+                    noise_scale=probe_noise_scale,
+                    noise_bias=probe_noise_bias,
+                    add_noise=True,
                     force_final_denoise=True,
                 )
             else:
                 latent_s2 = latent_s1
 
             if sigmas3 is not None:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=1.0 / 0.75)
-                stage3_start_from_beginning = True
+                latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
                 latent_s3 = _stage_denoise(
-                    model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
+                    model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
                     noise_seed=696969,
-                    add_noise=stage3_start_from_beginning,
+                    noise_scale=probe_noise_scale,
+                    noise_bias=probe_noise_bias,
+                    add_noise=True,
                     force_final_denoise=not return_noise_bool,
                 )
             else:
