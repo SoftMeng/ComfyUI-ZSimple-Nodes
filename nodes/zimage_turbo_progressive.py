@@ -349,7 +349,9 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Boolean.Input("creativity_mode", default=False, label_on="on", label_off="off",
                                 tooltip="Stage2 scramble + 1-step coherence pre-processing. seed%3==0 disables preproc for higher creativity (X21 behavior)."),
                 io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
-                                tooltip="Latent size multiplier per stage. 2.0=4x, √2=2x, etc."),
+                                tooltip="Legacy. Stage size chain now uses X21's fixed gentle progression "
+                                        "(0.5 -> 0.75 -> 1.0 of input size); this value no longer drives resize. "
+                                        "Output size always equals input latent size."),
                 io.Boolean.Input("detailed_refiner", default=True,
                                  tooltip="Stage3 switches to dpmpp_sde for high-freq detail recovery."),
                 io.Combo.Input("spectral_tilt", options=[p[0] for p in SPECTRAL_TILT_PRESETS], default="none",
@@ -432,7 +434,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_input = {**latent_input, "samples": t}
 
-            size_changed_s1_s2 = upscale_factor > 1.0
+            size_changed_s1_s2 = True
             force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on or size_changed_s1_s2
 
             initial_noise_scale = 1.0
@@ -450,7 +452,9 @@ class ZImageTurboProgressive(io.ComfyNode):
                 initial_noise_bias = initial_noise_bias * initial_bias_level
                 initial_noise_scale = 1.0 + 0.2
 
-            latent_s1_in = adjust_latent_size(latent_input, factor=1.0 / (upscale_factor * upscale_factor))
+            # X21-style gentle geometric progression (max_quality: .50/.75/1.0)
+            # avoids 2x resize jumps that leave 4px-period stripe artifacts.
+            latent_s1_in = adjust_latent_size(latent_input, factor=0.5)
 
             latent_s1 = _stage_denoise(
                 model, latent_s1_in, cond_s1, negative, cfg, sampler1, sigmas1,
@@ -462,7 +466,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             )
 
             if sigmas2 is not None:
-                latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
+                latent_s2_in = adjust_latent_size(latent_s1, factor=1.5)
                 preproc_pos = positive_stg2 or cond_s1
                 preproc_neg = cond_s1 if cfg > 0 else []
                 if scramble_on:
@@ -487,7 +491,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s2 = latent_s1
 
             if sigmas3 is not None:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+                latent_s3_in = adjust_latent_size(latent_s2, factor=1.0 / 0.75)
                 stage3_start_from_beginning = True
                 latent_s3 = _stage_denoise(
                     model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
