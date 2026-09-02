@@ -393,7 +393,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_input = {**latent_input, "samples": t}
 
-            force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on
+            size_changed_s1_s2 = upscale_factor > 1.0
+            force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on or size_changed_s1_s2
 
             latent_s1 = _stage_denoise(
                 model, latent_input, cond_s1, negative, cfg, sampler1, sigmas1,
@@ -419,7 +420,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s2 = _stage_denoise(
                     model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
                     noise_seed=seed + 16,
-                    add_noise=False,
+                    add_noise=force_denoise_stg1_stg2,
                     force_final_denoise=True,
                 )
             else:
@@ -430,10 +431,11 @@ class ZImageTurboProgressive(io.ComfyNode):
                     latent_s3_in = latent_s2
                 else:
                     latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+                stage3_start_from_beginning = True
                 latent_s3 = _stage_denoise(
                     model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
                     noise_seed=696969,
-                    add_noise=False,
+                    add_noise=stage3_start_from_beginning,
                     force_final_denoise=not return_noise_bool,
                 )
             else:
