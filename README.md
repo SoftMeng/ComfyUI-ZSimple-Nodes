@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-V3%20Schema-blue?style=for-the-badge)](https://github.com/comfyanonymous/ComfyUI)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=for-the-badge)](https://www.python.org/)
-[![Nodes](https://img.shields.io/badge/Nodes-3-orange?style=for-the-badge)](#-节点列表)
+[![Nodes](https://img.shields.io/badge/Nodes-4-orange?style=for-the-badge)](#-节点列表)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen?style=for-the-badge)](../../pulls)
 
 **为 ComfyUI 工作流添砖加瓦 · 单文件单节点 · 现代压缩与质量参数**
@@ -16,13 +16,14 @@
 
 ---
 
-## ✨ 三个节点，各自解决一个具体痛点
+## ✨ 四个节点，各自解决一个具体痛点
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
 | **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT / FLOAT / STRING 三格式同输出 + `next_int` 给下游节点预热 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
+| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive upscale 编排 | 3 阶段（构图 / 协调 / 细化）；CFG / shift / 创意 / Spectral-Tilt / Detailed-Refiner 一站式开关 |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -118,12 +119,62 @@ pip install -r requirements.txt
 > [!WARNING]
 > **当前文件名固定为 `<prefix>_00001.<ext>`，不会续接 counter**（与 SaveImagePlus 行为不同）。重复保存会覆盖同名文件——若需保留多份，请先切换 `filename_prefix`。
 
-> [!NOTE]
-> **JPEG XL** (`jxl`) 需要可选依赖 `pillow-jxl-plugin`：
-> ```bash
-> pip install pillow-jxl-plugin
-> ```
-> 安装后在 `requirements.txt` 中取消对应行的注释。JXL 提供**比 PNG 小很多的数学无损压缩**，非常适合 AI 绘画存档。
+---
+
+### 🎯 ZImageTurboProgressive（菜单：ZSimple-Nodes/sampling）
+
+**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale（步数比例 2:4:2），按阶段差异化能力：
+
+- Stage 1：构图（`creativity_mode` 可选）
+- Stage 2：协调（per-stage 采样器 / 调度器独立）
+- Stage 3：细化（`detailed_refiner` + `spectral_tilt` 可选）
+
+实现参考 `ComfyUI-ZImagePowerNodes` 的核心编排模式（sigma preset + scramble + spectral tilt），对外暴露单一节点。
+
+#### 核心输入
+
+| 参数 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `latent_input` | LATENT | — | Empty Latent 节点输出 |
+| `model` | MODEL | — | Z-Image Turbo loader 输出 |
+| `positive` | CONDITIONING | — | 主条件 |
+| `positive_stg2` | CONDITIONING (可选) | — | Stage 2 单独条件 |
+| `positive_stg3` | CONDITIONING (可选) | — | Stage 3 单独条件 |
+| `cfg` | FLOAT | 1.0 (min=0, max=15) | Z-Image Turbo 推荐 1.0（CFG-distilled） |
+| `seed` | INT | 0 | `control_after_generate=True` |
+| `shift` | FLOAT | 3.5 (min=0, max=100, 0=关闭) | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5 |
+| `steps` | INT | 8 (min=2, max=64) | 总步数按 2:4:2 分配为 2/4/2 |
+| `start_step` / `end_step` | INT | 0 / 8 | 仅 Stage 1 有效 |
+
+#### 多阶段独立参数
+
+| 参数 | stage1 | stage2 | stage3 |
+|---|---|---|---|
+| `sampler` | euler | euler | dpmpp_sde |
+| `scheduler` | normal | normal | normal |
+
+可选 8 个 sampler：`euler` / `euler_ancestral` / `dpmpp_2m` / `dpmpp_sde` / `dpmpp_2m_sde` / `dpmpp_3m_sde` / `uni_pc` / `ddim`
+可选 6 个 scheduler：`normal` / `karras` / `exponential` / `sgm_uniform` / `ddim_uniform` / `beta`
+
+#### 能力开关
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `creativity_mode` | `off` | `off` / `scrambled`（构图变体） / `refined_1/2/3`（N 步 coherence 恢复） |
+| `detailed_refiner` | True | Stage 3 切 dpmpp_sde 增强高频细节 |
+| `spectral_tilt` | `none` | Colored Noise Sampling 频域塑形；5 档预设：`none` / `stage3_H` / `stages12x_H` / `stages12x_l` / `stages123_H` |
+| `upscale_factor` | 2.0 (min=1, max=4) | 单 stage 倍率；3 stage 总放大 = `factor²` |
+| `add_noise` | `enable` | Stage 1 是否加噪（inpainting 设为 `disable`） |
+| `return_leftover_noise` | `disable` | Stage 3 是否保留残留噪波（链式下游节点用） |
+
+#### 输出
+
+- `latent_output`：LATENT（denoise 完成后的最终 latent）
+
+> [!WARNING]
+> - **shift 默认 3.5 与 Z-Image Turbo 官方推荐一致**；改为其它值（特别是 ≥4）会导致生成图"melted/smeared"（社区实测）。
+> - **upscale_factor > 1.0** 会让 latent 输出尺寸 = 输入 × `factor²`（例：factor=2 → 4× 放大）。如需保持输入尺寸，factor=1.0。
+> - **return_leftover_noise=enable** 会让 Stage 3 保留残留 σ 噪波，可能让下游节点处理异常——确认下游需要时再启用。
 
 ---
 
@@ -177,6 +228,7 @@ touch nodes/my_new_node.py
 ## 🙏 致谢
 
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) —— 让节点工作流成为可能
+- [ComfyUI-ZImagePowerNodes](https://github.com/martin-rizzo/ComfyUI-ZImagePowerNodes) —— ZImageTurboProgressive 节点的核心算法实现参考
 - 所有提供建议、反馈、Issue 的用户
 
 <div align="center">
