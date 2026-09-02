@@ -223,8 +223,6 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0 (positive == negative)."),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
                              tooltip="Seed for stage1. Stage2/3 use deterministic offsets (seed+16, 696969)."),
-                io.Float.Input("shift", default=3.5, min=0.0, max=100.0, step=0.01,
-                                tooltip="Logit-normal time shift. 0 disables. Z-Image Turbo ≈3.5."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
                 io.Combo.Input("return_leftover_noise", options=["disable", "enable"], default="disable",
@@ -249,7 +247,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
+    def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: str, initial_bias: float, latent_scaling: str,
                 intensity: float, refine_enter_sigma: float,
@@ -294,10 +292,6 @@ class ZImageTurboProgressive(io.ComfyNode):
         }
         target_h, target_w = latent_input["samples"].shape[-2:]
 
-        model_sampling = model.get_model_object("model_sampling")
-        original_shift = getattr(model_sampling, "shift", None)
-        if shift > 0:
-            model_sampling.shift = shift
 
         try:
             creativity_on = creativity_mode == "on"
@@ -371,7 +365,5 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
             else:
                 latent_s3 = latent_s2
-        finally:
-            model_sampling.shift = original_shift
 
         return io.NodeOutput(latent_s3)

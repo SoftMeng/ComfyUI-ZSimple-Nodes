@@ -133,7 +133,6 @@ pip install -r requirements.txt
 | `positive` | CONDITIONING | — | 单 prompt（所有 stage 共用）|
 | `cfg` | FLOAT | 1.0 | Z-Image Turbo 是 CFG-distilled，推荐 1.0（positive == negative）|
 | `seed` | INT | 0 | stage1 用此 seed；stage2 用 `seed+16`，stage3 用 `696969` 派生 |
-| `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；`0` 禁用 |
 | `add_noise` | COMBO | `enable` | stage1 是否加噪；inpainting 设为 `disable` |
 | `return_leftover_noise` | COMBO | `disable` | stage3 是否保留残噪（链式下游用）—— 见下方说明 |
 | `steps` | INT | 8 | 总步数（`8` → `bravo_8`，3–7 → `alpha_N`；>8 回落 bravo_8）|

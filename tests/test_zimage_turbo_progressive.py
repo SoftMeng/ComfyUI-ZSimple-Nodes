@@ -113,7 +113,7 @@ def test_adjust_latent_size_target_size_forces_resize():
 
 def test_define_schema_inputs_count():
     schema = ZImageTurboProgressive.define_schema()
-    assert len(schema.inputs) == 17
+    assert len(schema.inputs) == 16
 
 
 def test_define_schema_field_names():
@@ -125,7 +125,7 @@ def test_define_schema_field_names():
             names.add(name)
     expected = {
         "latent_input", "model", "positive",
-        "cfg", "seed", "shift",
+        "cfg", "seed",
         "add_noise", "return_leftover_noise",
         "steps", "creativity_mode", "initial_bias",
         "latent_scaling", "intensity", "refine_enter_sigma",
