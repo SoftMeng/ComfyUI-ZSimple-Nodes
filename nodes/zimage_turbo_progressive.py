@@ -1,17 +1,12 @@
-"""Z-Image Turbo 3-stage progressive upscaling sampler.
+"""Z-Image Turbo 3-stage progressive upscaling.
 
-Architecture mirrors ComfyUI-ZImagePowerNodes/zsampler_turbo_core for correctness:
-- 3-stage sigma slicing (alpha preset pattern)
-- stage2 scramble (creativity_mode = scrambled)
-- stage2 preproc with extra noise injection (refined_1/2/3)
-- stage3 dpmpp_sde refiner
-- SpectralAdjustedSampler wrapper for spectral tilt
-- noise_scale / noise_bias for initial noise calibration
+Three sampling stages share one sigma sequence (2:4:2 step split).
+Each stage takes the previous stage's latent, upscales it, then
+runs the slice of sigmas that was assigned to it.
 """
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 
 from comfy_api.latest import io
 
@@ -19,22 +14,12 @@ import comfy.model_management
 import comfy.sample
 import comfy.samplers
 import comfy.utils
-from comfy.samplers import KSAMPLER, ksampler, sampler_object
 
 import latent_preview
 
 
 SAMPLER_NAMES = ["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_sde", "dpmpp_2m_sde", "dpmpp_3m_sde", "uni_pc", "ddim"]
 SCHEDULER_NAMES = ["normal", "karras", "exponential", "sgm_uniform", "ddim_uniform", "beta"]
-CREATIVITY_MODES = ["off", "scrambled", "refined_1", "refined_2", "refined_3"]
-SPECTRAL_TILT_PRESETS = [
-    ("none", "", (0.0, 0.0), 1.0),
-    ("stage3_H", "3", (-0.3, -0.3), 1.0),
-    ("stages12x_H", "12x", (0.2, -0.9), 0.7),
-    ("stages12x_l", "12x", (0.2, -2.0), 0.8),
-    ("stages123_H", "123", (0.2, -0.9), 0.7),
-]
-FREEU_V2_DEFAULTS = (1.3, 1.4, 0.9, 0.2)
 
 
 def _stage_split(total_steps: int) -> tuple[int, int, int]:
@@ -43,215 +28,6 @@ def _stage_split(total_steps: int) -> tuple[int, int, int]:
     s3 = max(1, round(s * 0.25))
     s2 = max(1, s - s1 - s3)
     return s1, s2, s3
-
-
-def _scramble_counts(seed: int) -> tuple[int, int, int, int]:
-    if seed % 10 == 0:
-        return (-2, -2, -2, -2)
-    if seed % 2 == 0:
-        return (2, -1, 2, -1)
-    return (1, 0, 1, 0)
-
-
-def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
-    if x.dim() != 4 or not any(counts):
-        return x
-    x_scale = x.std(dim=(2, 3), keepdim=True)
-    x_bias = x.mean(dim=(2, 3), keepdim=True)
-    generator = torch.Generator().manual_seed(seed)
-    B, C, H, W = x.shape
-    result = torch.zeros_like(x)
-    anchors = ('left', 'top', 'right', 'bottom')
-    for anchor_idx, anchor in enumerate(anchors):
-        for _ in range(abs(counts[anchor_idx])):
-            fh = int(H * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
-            fw = int(W * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
-            fh = max(8, min(fh, H))
-            fw = max(8, min(fw, W))
-            if anchor in ('left', 'right'):
-                fy = torch.randint(0, max(1, H - fh + 1), (1,), generator=generator).item()
-                fx = 0 if anchor == 'left' else W - fw
-            else:
-                fy = 0 if anchor == 'top' else H - fh
-                fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
-            frag = x[:, :, fy:fy + fh, fx:fx + fw].clone()
-            if counts[anchor_idx] < 0:
-                if torch.rand(1, generator=generator).item() > 0.5:
-                    frag = torch.flip(frag, dims=[-1])
-                if torch.rand(1, generator=generator).item() > 0.5:
-                    frag = torch.flip(frag, dims=[-2])
-            frag_resized = F.interpolate(frag, size=(H, W), mode='bicubic', align_corners=False)
-            result = result + frag_resized
-    r_scale = result.std(dim=(2, 3), keepdim=True).clamp(min=1e-6)
-    r_bias = result.mean(dim=(2, 3), keepdim=True)
-    scale = x_scale / r_scale
-    bias = x_bias - r_bias * scale
-    return result * scale + bias
-
-
-def _locked_noise_from_prev(eps_prev, target_shape, seed_new):
-    """Inject new noise while keeping prev stage's coarse anchor.
-
-    Three components:
-      1. eps_prev lifted to target size via bilinear — the coarse
-         anchor that ties this stage to the previous one's layout.
-      2. Fresh eta sampled at target size — the new stochasticity.
-      3. eta minus its 2x2-pooled version — high-frequency novelty
-         only; the coarse band is dropped to avoid re-noising the
-         regions already pinned by the lifted anchor.
-
-    Std-normalize so the returned tensor has unit variance per
-    channel, matching the typical `randn_like` convention used
-    elsewhere in this file.
-    """
-    device = eps_prev.device
-    dtype = eps_prev.dtype
-    B, C, H1, W1 = target_shape
-
-    g = torch.Generator(device=device)
-    g.manual_seed(seed_new)
-    eta = torch.randn((B, C, H1, W1), generator=g, device=device, dtype=dtype)
-
-    lifted = F.interpolate(eps_prev, size=(H1, W1), mode='bilinear', align_corners=False)
-
-    eta_low = F.interpolate(F.avg_pool2d(eta, kernel_size=2),
-                             size=(H1, W1), mode='bilinear', align_corners=False)
-    eta_high = eta - eta_low
-
-    out = lifted + eta_high
-    return out / out.std(dim=(2, 3), keepdim=True).clamp(min=1e-6)
-
-
-def _adjust_spectral_distribution(noise: torch.Tensor, alpha: float, power_gamma: float = 0.5) -> torch.Tensor:
-    B, C, H, W = noise.shape
-    u = torch.fft.fftfreq(H, device=noise.device, dtype=noise.dtype).view(H, 1)
-    v = torch.fft.fftfreq(W, device=noise.device, dtype=noise.dtype).view(1, W)
-    grid = u ** 2 + v ** 2
-    grid[0, 0] = 1.0
-    filt = grid ** (power_gamma * alpha)
-    n_fft = torch.fft.fft2(noise, dim=(-2, -1))
-    n_fft = n_fft / filt
-    filtered = torch.fft.ifft2(n_fft, dim=(-2, -1)).real
-    std = filtered.std(dim=(1, 2, 3), keepdim=True).clamp(min=1e-6)
-    return filtered / std
-
-
-def _fourier_lowpass(x: torch.Tensor, threshold: int, scale: float) -> torch.Tensor:
-    x_freq = torch.fft.fftn(x.float(), dim=(-2, -1))
-    x_freq = torch.fft.fftshift(x_freq, dim=(-2, -1))
-    B, C, H, W = x_freq.shape
-    mask = torch.ones((B, C, H, W), device=x.device)
-    crow, ccol = H // 2, W // 2
-    mask[..., crow - threshold:crow + threshold, ccol - threshold:ccol + threshold] = scale
-    x_freq = x_freq * mask
-    x_freq = torch.fft.ifftshift(x_freq, dim=(-2, -1))
-    return torch.fft.ifftn(x_freq, dim=(-2, -1)).real.to(x.dtype)
-
-
-def _apply_freeu_v2(model, b1: float, b2: float, s1: float, s2: float):
-    """Patch model output blocks per FreeU_V2 paper (Si et al. 2023).
-
-    Returns a clone with output_block_patch set; the returned model is
-    isolated from the original so other nodes are unaffected.
-    """
-    model_channels = model.model.model_config.unet_config.get("model_channels")
-    if model_channels is None:
-        return model
-    scale_dict = {model_channels * 4: (b1, s1), model_channels * 2: (b2, s2)}
-
-    def output_block_patch(h, hsp, transformer_options):
-        scale = scale_dict.get(int(h.shape[1]), None)
-        if scale is None:
-            return h, hsp
-        hidden_mean = h.mean(1, keepdim=True)
-        B = hidden_mean.shape[0]
-        hidden_max = hidden_mean.view(B, -1).max(dim=-1, keepdim=True)[0]
-        hidden_min = hidden_mean.view(B, -1).min(dim=-1, keepdim=True)[0]
-        denom = (hidden_max - hidden_min).clamp(min=1e-6).unsqueeze(2).unsqueeze(3)
-        hidden_mean = (hidden_mean - hidden_min.unsqueeze(2).unsqueeze(3)) / denom
-        h[:, : h.shape[1] // 2] = h[:, : h.shape[1] // 2] * ((scale[0] - 1) * hidden_mean + 1)
-        hsp = _fourier_lowpass(hsp, threshold=1, scale=scale[1])
-        return h, hsp
-
-    m = model.clone()
-    m.set_model_output_block_patch(output_block_patch)
-    return m
-
-
-class SpectralAdjustedSampler(KSAMPLER):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0), *, inner_sampler: KSAMPLER):
-        self._inner = inner_sampler
-        self._alpha = alpha_tilting
-        self._sharp = alpha_sharpness
-        self._range = sigma_range
-        super().__init__(
-            sampler_function=(lambda *a, **kw: self._run(*a, **kw)),
-            extra_options=inner_sampler.extra_options.copy(),
-            inpaint_options=inner_sampler.inpaint_options.copy(),
-        )
-
-    def _run(self, model, noise, sigmas, *args, **kwargs):
-        base_noise_sampler = kwargs.pop("noise_sampler", None)
-        if base_noise_sampler is None:
-            base_noise_sampler = (lambda *a, **kw: torch.randn_like(noise))
-        sig = float(sigmas[0].mean().detach().cpu())
-        if isinstance(self._alpha, (list, tuple)) and len(self._alpha) == 2:
-            s0, s1 = self._range
-            r = s1 - s0
-            prog = max(0.0, min(1.0, (sig - s0) / r)) if r != 0 else 1.0
-            alpha = self._alpha[0] + (prog ** self._sharp) * (self._alpha[1] - self._alpha[0])
-        else:
-            alpha = float(self._alpha)
-        custom = (lambda *a, **kw: _adjust_spectral_distribution(
-            base_noise_sampler(*a, **kw), alpha=alpha))
-        return self._inner.sampler_function(model, noise, sigmas, *args,
-                                            noise_sampler=custom, **kwargs)
-
-
-class EulerAss(SpectralAdjustedSampler):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0)):
-        super().__init__(alpha_tilting, alpha_sharpness, sigma_range,
-                         inner_sampler=ksampler("euler_ancestral"))
-
-
-class DPMPP_SDEss(SpectralAdjustedSampler):
-    def __init__(self, alpha_tilting=(0.1, -1.0), alpha_sharpness=1.0, sigma_range=(0.9999, 0.0)):
-        super().__init__(alpha_tilting, alpha_sharpness, sigma_range,
-                         inner_sampler=ksampler("dpmpp_sde"))
-
-
-def _resolve_sampler(name_or):
-    if isinstance(name_or, KSAMPLER):
-        return name_or
-    if not isinstance(name_or, str):
-        return sampler_object("euler")
-    if name_or == "euler_ass":
-        return EulerAss()
-    if name_or == "dpmpp_sde_ss":
-        return DPMPP_SDEss()
-    return sampler_object(name_or)
-
-
-def _resolve_spectral_for_stage(stage_idx: int, tilt_stages: str,
-                                 alpha_tilting, alpha_sharpness,
-                                 base_name: str) -> KSAMPLER:
-    if str(stage_idx + 1) not in tilt_stages:
-        return _resolve_sampler(base_name)
-    if "dpmpp_sde" in base_name:
-        return DPMPP_SDEss(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
-    return EulerAss(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
-
-
-def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
-    g = torch.Generator().manual_seed(seed)
-    noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
-    if noise_scale != 1.0:
-        noise = noise * noise_scale
-    if noise_bias != 0.0:
-        bias = torch.full((shape[0], shape[1], 1, 1), float(noise_bias),
-                          dtype=dtype, device=device)
-        noise = noise + bias
-    return noise
 
 
 def _slice_sigmas_by_steps(sigmas, start_step: int, num_steps: int):
@@ -275,7 +51,6 @@ def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
 
 
 def _coerce_latent(latent):
-    """Accept LATENT dict OR raw Tensor; always return dict."""
     if isinstance(latent, dict):
         return latent
     if torch.is_tensor(latent):
@@ -283,7 +58,7 @@ def _coerce_latent(latent):
     raise TypeError(f"latent must be dict or Tensor, got {type(latent).__name__}")
 
 
-def adjust_latent_size(latent, factor: float, method: str = "area"):
+def _upscale_latent(latent, factor: float):
     latent = _coerce_latent(latent)
     if factor == 1.0:
         return latent
@@ -291,68 +66,19 @@ def adjust_latent_size(latent, factor: float, method: str = "area"):
     _, _, hh, ww = samples.shape
     new_h = max(8, round(hh * factor / 8) * 8)
     new_w = max(8, round(ww * factor / 8) * 8)
-    out = comfy.utils.common_upscale(samples, new_w, new_h, method, "disabled")
+    out = comfy.utils.common_upscale(samples, new_w, new_h, "area", "disabled")
     return {**latent, "samples": out}
 
 
-def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
-                     sampler, noise_seed, noise_scale, noise_bias,
-                     stage2_sigmas=None,
-                     extra_noise_freqs=(1024,), extra_noise_scales=(0.8,)):
-    latent = _coerce_latent(latent)
-    if preproc_steps <= 0:
-        return latent, False
-    latents = latent["samples"]
-    add_noise = True
-    for i in range(preproc_steps):
-        if i == 0:
-            sigmas = torch.tensor((0.949, 0.0))
-        elif stage2_sigmas is not None and stage2_sigmas.numel() >= 2:
-            sigmas = stage2_sigmas[:2]
-        else:
-            sigmas = comfy.samplers.calculate_sigmas(
-                model.get_model_object("model_sampling"), "normal", 2)
-        freqs = extra_noise_freqs if i == 0 else (0,)
-        scales = extra_noise_scales if i == 0 else (0,)
-        out_dict = _stage_denoise(
-            model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
-            sampler, sigmas,
-            noise_seed=noise_seed + i,
-            noise_scale=noise_scale, noise_bias=noise_bias,
-            add_noise=add_noise,
-            force_final_denoise=True,
-            extra_noise_freqs=freqs, extra_noise_scales=scales,
-        )
-        latents = out_dict["samples"]
-    return {"samples": latents}, add_noise
-
-
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
-                   noise_seed, noise_scale=1.0, noise_bias=0.0,
-                   add_noise=True, force_final_denoise=True, extra_noise_freqs=0, extra_noise_scales=0,
-                   prev_eps=None):
+                   noise_seed, add_noise):
     latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
-    if prev_eps is not None:
-        locked = _locked_noise_from_prev(prev_eps.to(device), x0.shape, noise_seed + 10007).to(dtype=x0.dtype)
-        x0 = x0 + locked
-    eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
-                          noise_bias=noise_bias, dtype=x0.dtype, device=device)
+    g = torch.Generator().manual_seed(noise_seed)
+    eps = torch.randn(x0.shape, generator=g, dtype=x0.dtype, device="cpu").to(device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
-    B, C, H, W = x0.shape
-    if extra_noise_freqs and extra_noise_scales:
-        freqs = extra_noise_freqs if isinstance(extra_noise_freqs, tuple) else (extra_noise_freqs,)
-        scales = extra_noise_scales if isinstance(extra_noise_scales, tuple) else (extra_noise_scales,)
-        for freq, scale in zip(freqs, scales):
-            if scale <= 0.0:
-                continue
-            lr_shape = (B, C, max(1, H * freq // 1024), max(1, W * freq // 1024))
-            noise_seed += 1
-            low_noise = _generate_noise(noise_seed, lr_shape, noise_scale=scale,
-                                       noise_bias=0.0, dtype=x0.dtype, device=device)
-            eps = eps + F.interpolate(low_noise, size=(H, W), mode='bicubic', align_corners=False)
     callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
     samples = comfy.sample.sample_custom(
         model, eps, cfg, sampler_obj, sigmas,
@@ -372,7 +98,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             node_id="ZImageTurboProgressive",
             display_name="Z-Image Turbo Progressive",
             category="ZSimple-Nodes/sampling",
-            description="3-stage progressive upscale (2:4:2 step split) for Z-Image Turbo with shift, spectral tilt, creativity, detailed_refiner.",
+            description="3-stage progressive upscale (2:4:2 step split) for Z-Image Turbo.",
             inputs=[
                 io.Latent.Input("latent_input"),
                 io.Model.Input("model"),
@@ -382,79 +108,37 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Float.Input("cfg", default=1.0, min=0.0, max=15.0, step=0.1,
                                 tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0 (positive == negative)."),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
-                             tooltip="Seed for stage1. Stage2/3 use seed+16, 696969 (fixed)."),
+                             tooltip="Seed for stage1. Stage2/3 use deterministic offsets."),
                 io.Float.Input("shift", default=3.5, min=0.0, max=100.0, step=0.01,
-                                tooltip="Logit-normal time shift (ModelSamplingSD3 style). 0 disables. Z-Image Turbo ≈3.5."),
+                                tooltip="Logit-normal time shift. 0 disables. Z-Image Turbo ≈3.5."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
-                io.Combo.Input("return_leftover_noise", options=["disable", "enable"], default="disable",
-                                tooltip="Stage3 leave residual sigma noise in output (for downstream nodes)."),
                 io.Int.Input("steps", default=8, min=2, max=64,
                              tooltip="Total denoise steps, split 2:4:2 across 3 stages."),
-                io.Int.Input("start_step", default=0, min=0, max=10000,
-                             tooltip="Stage1 sigma slice start (advanced)."),
-                io.Int.Input("end_step", default=8, min=1, max=10000,
-                             tooltip="Stage1 sigma slice end (advanced)."),
-                io.Combo.Input("creativity_mode", options=CREATIVITY_MODES, default="off",
-                                tooltip="off=clean. scrambled=structure variation. refined_N=N-step coherence recovery."),
                 io.Float.Input("upscale_factor", default=2.0, min=1.0, max=4.0, step=0.1,
-                                tooltip="Latent size multiplier per stage. 2.0=4x, √2=2x, etc."),
-                io.Combo.Input("upscale_method",
-                                options=["nearest-exact", "bilinear", "area", "bislerp", "bicubic", "lanczos"],
-                                default="area",
-                                tooltip="Latent-domain resize method (passed to comfy.utils.common_upscale)."),
-                io.Boolean.Input("detailed_refiner", default=True,
-                                 tooltip="Stage3 switches to dpmpp_sde for high-freq detail recovery."),
-                io.Combo.Input("spectral_tilt", options=[p[0] for p in SPECTRAL_TILT_PRESETS], default="none",
-                                tooltip="Colored Noise Sampling style freq-domain noise shaping. "
-                                        "Acts on the noise tensor (orthogonal to model_function_hook which acts on UNet)."),
-                io.Combo.Input("model_function_hook", options=["none", "freeu_v2"], default="none",
-                                tooltip="Apply a UNet-level hook. 'freeu_v2' sets FreeU_V2 output-block patch "
-                                        "(b1=1.3, b2=1.4, s1=0.9, s2=0.2)."),
-                io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
-                io.Combo.Input("stage1_scheduler", options=SCHEDULER_NAMES, default="normal"),
-                io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
-                io.Combo.Input("stage2_scheduler", options=SCHEDULER_NAMES, default="normal"),
-                io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
-                io.Combo.Input("stage3_scheduler", options=SCHEDULER_NAMES, default="normal"),
+                                tooltip="Latent size multiplier per stage. 2.0 = 4x total."),
+                io.Combo.Input("sampler", options=SAMPLER_NAMES, default="euler",
+                                tooltip="Solver used for all three stages."),
+                io.Combo.Input("scheduler", options=SCHEDULER_NAMES, default="normal",
+                                tooltip="Sigma scheduler. Shared by all stages."),
             ],
             outputs=[io.Latent.Output("latent_output")],
         )
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int, shift: float,
-                add_noise: str, return_leftover_noise: str, steps: int,
-                start_step: int, end_step: int, creativity_mode: str,
-                upscale_factor: float, upscale_method: str, detailed_refiner: bool, spectral_tilt: str,
-                model_function_hook: str,
-                stage1_sampler: str, stage1_scheduler: str,
-                stage2_sampler: str, stage2_scheduler: str,
-                stage3_sampler: str, stage3_scheduler: str,
+                add_noise: str, steps: int, upscale_factor: float,
+                sampler: str, scheduler: str,
                 positive: list | None = None,
                 positive_stg2: list | None = None,
                 positive_stg3: list | None = None) -> io.NodeOutput:
 
         s1_steps, s2_steps, s3_steps = _stage_split(steps)
         add_noise_bool = add_noise == "enable"
-        return_noise_bool = return_leftover_noise == "enable"
         cond_s1 = positive or []
         cond_s2 = positive_stg2 or cond_s1
         cond_s3 = positive_stg3 or cond_s2
         negative = cond_s1 if cfg > 0 else []
-        preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
-                     "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
-        scramble_on = creativity_mode == "scrambled"
-
-        tilt_entry = next(p for p in SPECTRAL_TILT_PRESETS if p[0] == spectral_tilt)
-        _, tilt_stages, alpha_tilting, alpha_sharpness = tilt_entry
-
-        sampler1 = _resolve_spectral_for_stage(0, tilt_stages, alpha_tilting, alpha_sharpness, stage1_sampler)
-        sampler2 = _resolve_spectral_for_stage(1, tilt_stages, alpha_tilting, alpha_sharpness, stage2_sampler)
-        s3_base = "dpmpp_sde" if detailed_refiner else stage3_sampler
-        sampler3 = _resolve_spectral_for_stage(2, tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
-
-        if model_function_hook == "freeu_v2":
-            model = _apply_freeu_v2(model, *FREEU_V2_DEFAULTS)
 
         model_sampling = model.get_model_object("model_sampling")
         original_shift = getattr(model_sampling, "shift", None)
@@ -462,71 +146,37 @@ class ZImageTurboProgressive(io.ComfyNode):
             model_sampling.shift = shift
 
         try:
-            sigmas_full = _resolve_sigmas(model, stage1_scheduler, stage1_sampler, steps)
+            sigmas_full = _resolve_sigmas(model, scheduler, sampler, steps)
             if sigmas_full is None:
-                print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
-                return io.NodeOutput(latent_input)
-            if stage2_scheduler != stage1_scheduler or stage3_scheduler != stage1_scheduler:
-                print("[ZImageTurboProgressive] WARNING: stage2/stage3 scheduler ignored in sigma-step-range mode; all stages use stage1_scheduler.")
-            if stage2_sampler != stage1_sampler or s3_base != stage1_sampler:
-                print("[ZImageTurboProgressive] WARNING: stage2/stage3 sampler ignored in sigma-step-range mode; all stages use stage1_sampler.")
-
-            sigmas1 = _slice_sigmas_by_steps(sigmas_full, 0,                s1_steps)
-            sigmas2 = _slice_sigmas_by_steps(sigmas_full, s1_steps,         s2_steps)
-            sigmas3 = _slice_sigmas_by_steps(sigmas_full, s1_steps+s2_steps, s3_steps)
-            if sigmas1 is None or sigmas2 is None or sigmas3 is None:
-                print("[ZImageTurboProgressive] ERROR: sigma slicing failed.")
+                print("[ZImageTurboProgressive] sigma generation failed; check scheduler.")
                 return io.NodeOutput(latent_input)
 
-            latent_input = {**latent_input, "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"])}
+            sigmas1 = _slice_sigmas_by_steps(sigmas_full, 0, s1_steps)
+            sigmas2 = _slice_sigmas_by_steps(sigmas_full, s1_steps, s2_steps)
+            sigmas3 = _slice_sigmas_by_steps(sigmas_full, s1_steps + s2_steps, s3_steps)
 
-            if add_noise_bool and scramble_on:
-                t = latent_input["samples"]
-                t = _scramble_tensor(t, _scramble_counts(seed), seed)
-                latent_input = {**latent_input, "samples": t}
+            latent_input = {
+                **latent_input,
+                "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"]),
+            }
 
-            force_denoise_stg1_stg2 = preproc_n > 0 or scramble_on
+            sampler_obj = comfy.samplers.sampler_object(sampler)
 
             latent_s1 = _stage_denoise(
-                model, latent_input, cond_s1, negative, cfg, sampler1, sigmas1,
-                noise_seed=seed,
-                add_noise=add_noise_bool,
-                force_final_denoise=force_denoise_stg1_stg2 or s2_steps == 0,
+                model, latent_input, cond_s1, negative, cfg, sampler_obj, sigmas1,
+                noise_seed=seed, add_noise=add_noise_bool,
             )
-            eps_s1 = latent_s1["samples"].clone()
 
-            latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor, method=upscale_method)
-            preproc_pos = positive_stg2 or cond_s1
-            if scramble_on:
-                t = latent_s2_in["samples"]
-                t = _scramble_tensor(t, _scramble_counts(seed), seed)
-                latent_s2_in = {**latent_s2_in, "samples": t}
-            if preproc_n > 0:
-                latent_s2_in, _ = _stage2_preproc(
-                    model, latent_s2_in, cfg, preproc_n, preproc_pos,
-                    sampler2, seed + 16, 1.0, 0.0,
-                    stage2_sigmas=sigmas2,
-                )
-
+            latent_s2_in = _upscale_latent(latent_s1, factor=upscale_factor)
             latent_s2 = _stage_denoise(
-                model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
-                noise_seed=seed + 16,
-                add_noise=False,
-                force_final_denoise=True,
-                prev_eps=eps_s1,
+                model, latent_s2_in, cond_s2, negative, cfg, sampler_obj, sigmas2,
+                noise_seed=seed + 16, add_noise=False,
             )
 
-            if upscale_factor <= 1.0:
-                latent_s3_in = latent_s2
-            else:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor, method=upscale_method)
-            eps_s2 = latent_s2["samples"].clone()
+            latent_s3_in = _upscale_latent(latent_s2, factor=upscale_factor)
             latent_s3 = _stage_denoise(
-                model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
-                noise_seed=696969,
-                add_noise=False,
-                force_final_denoise=not return_noise_bool,
-                prev_eps=eps_s2,
+                model, latent_s3_in, cond_s3, negative, cfg, sampler_obj, sigmas3,
+                noise_seed=seed + 32, add_noise=False,
             )
         finally:
             model_sampling.shift = original_shift
