@@ -77,7 +77,7 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
                     frag = torch.flip(frag, dims=[-1])
                 if torch.rand(1, generator=generator).item() > 0.5:
                     frag = torch.flip(frag, dims=[-2])
-            frag_resized = F.interpolate(frag, size=(H, W), mode='bilinear', align_corners=False)
+            frag_resized = F.interpolate(frag, size=(H, W), mode='bicubic', align_corners=False)
             result = result + frag_resized
     r_scale = result.std(dim=(2, 3), keepdim=True).clamp(min=1e-6)
     r_bias = result.mean(dim=(2, 3), keepdim=True)
@@ -245,7 +245,7 @@ def _resolve_spectral_for_stage(stage_idx: int, tilt_stages: str,
 
 
 def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
-    g = torch.manual_seed(seed)
+    g = torch.Generator().manual_seed(seed)
     noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
     if noise_scale != 1.0:
         noise = noise * noise_scale
@@ -256,10 +256,10 @@ def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype,
     return noise
 
 
-def _resolve_sigmas(model, scheduler_name: str, steps: int):
+def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
     model_sampling = model.get_model_object("model_sampling")
     discard_set = ("dpm_2", "dpm_2_ancestral", "uni_pc", "uni_pc_bh2")
-    do_discard = scheduler_name in discard_set
+    do_discard = sampler_name in discard_set
     calc_steps = steps + 1 if do_discard else steps
     sigmas = comfy.samplers.calculate_sigmas(model_sampling, scheduler_name, calc_steps)
     if do_discard and sigmas is not None and sigmas.numel() >= 2:
@@ -324,7 +324,8 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
     if prev_eps is not None:
-        x0 = x0 + _locked_noise_from_prev(prev_eps.to(device), x0.shape, noise_seed).to(dtype=x0.dtype)
+        locked = _locked_noise_from_prev(prev_eps.to(device), x0.shape, noise_seed + 10007).to(dtype=x0.dtype)
+        x0 = x0 + locked
     eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
                           noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
@@ -438,9 +439,9 @@ class ZImageTurboProgressive(io.ComfyNode):
             model_sampling.shift = shift
 
         try:
-            sigmas1 = _resolve_sigmas(model, stage1_scheduler, s1_steps)
-            sigmas2 = _resolve_sigmas(model, stage2_scheduler, s2_steps)
-            sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_steps)
+            sigmas1 = _resolve_sigmas(model, stage1_scheduler, stage1_sampler, s1_steps)
+            sigmas2 = _resolve_sigmas(model, stage2_scheduler, stage2_sampler, s2_steps)
+            sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_base, s3_steps)
             if sigmas1 is None or sigmas2 is None or sigmas3 is None:
                 print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
                 return io.NodeOutput(latent_input)
