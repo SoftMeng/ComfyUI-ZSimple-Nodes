@@ -70,14 +70,17 @@ def _coerce_latent(latent):
     raise TypeError(f"latent must be dict or Tensor, got {type(latent).__name__}")
 
 
-def adjust_latent_size(latent, factor: float):
+def adjust_latent_size(latent, factor: float = 1.0, target_size: tuple[int, int] | None = None):
     latent = _coerce_latent(latent)
-    if factor == 1.0:
-        return latent
     samples = latent["samples"]
     _, _, hh, ww = samples.shape
-    new_h = max(8, round(hh * factor / 8) * 8)
-    new_w = max(8, round(ww * factor / 8) * 8)
+    if target_size is not None:
+        new_h, new_w = target_size
+    else:
+        new_h = max(8, round(hh * factor / 8) * 8)
+        new_w = max(8, round(ww * factor / 8) * 8)
+    if new_h == hh and new_w == ww:
+        return latent
     out = comfy.utils.common_upscale(samples, new_w, new_h, "bislerp", "disabled")
     return {**latent, "samples": out}
 
@@ -289,6 +292,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             **latent_input,
             "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"]),
         }
+        target_h, target_w = latent_input["samples"].shape[-2:]
 
         model_sampling = model.get_model_object("model_sampling")
         original_shift = getattr(model_sampling, "shift", None)
@@ -364,6 +368,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     add_noise=True,
                     force_final_denoise=not return_noise_bool,
                 )
+                latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
             else:
                 latent_s3 = latent_s2
         finally:

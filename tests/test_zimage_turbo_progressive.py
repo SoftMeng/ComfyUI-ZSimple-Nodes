@@ -95,6 +95,15 @@ def test_adjust_latent_size_accepts_tensor():
     assert isinstance(out, dict) and out["samples"].shape == (1, 4, 32, 32)
 
 
+def test_adjust_latent_size_target_size_forces_resize():
+    import torch
+    out = adjust_latent_size(
+        {"samples": torch.zeros(1, 4, 32, 32)},
+        factor=1.0, target_size=(16, 16),
+    )
+    assert out["samples"].shape == (1, 4, 16, 16)
+
+
 def test_define_schema_inputs_count():
     schema = ZImageTurboProgressive.define_schema()
     assert len(schema.inputs) == 17
