@@ -63,14 +63,16 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     anchors = ('left', 'top', 'right', 'bottom')
     for anchor_idx, anchor in enumerate(anchors):
         for _ in range(abs(counts[anchor_idx])):
-            h_start = 0 if anchor in ('left', 'top') else H // 2
-            w_start = 0 if anchor in ('left', 'bottom') else W // 2
             fh = int(H * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
             fw = int(W * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
             fh = max(8, min(fh, H))
             fw = max(8, min(fw, W))
-            fy = torch.randint(0, max(1, H - fh + 1), (1,), generator=generator).item()
-            fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
+            if anchor in ('left', 'right'):
+                fy = torch.randint(0, max(1, H - fh + 1), (1,), generator=generator).item()
+                fx = 0 if anchor == 'left' else W - fw
+            else:
+                fy = 0 if anchor == 'top' else H - fh
+                fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
             frag = x[:, :, fy:fy + fh, fx:fx + fw].clone()
             if counts[anchor_idx] < 0:
                 if torch.rand(1, generator=generator).item() > 0.5:
@@ -305,6 +307,7 @@ def adjust_latent_size(latent, factor: float):
 
 def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
                      sampler, noise_seed, noise_scale, noise_bias,
+                     stage2_sigmas=None,
                      extra_noise_freqs=(1024,), extra_noise_scales=(0.8,)):
     latent = _coerce_latent(latent)
     if preproc_steps <= 0:
@@ -312,8 +315,11 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
     latents = latent["samples"]
     add_noise = True
     for i in range(preproc_steps):
-        sigmas = torch.tensor((0.949, 0.0)) if i == 0 else None
-        if sigmas is None:
+        if i == 0:
+            sigmas = torch.tensor((0.949, 0.0))
+        elif stage2_sigmas is not None and stage2_sigmas.numel() >= 2:
+            sigmas = stage2_sigmas[:2]
+        else:
             sigmas = comfy.samplers.calculate_sigmas(
                 model.get_model_object("model_sampling"), "normal", 2)
         freqs = extra_noise_freqs if i == 0 else (0,)
@@ -497,6 +503,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 latent_s2_in, _ = _stage2_preproc(
                     model, latent_s2_in, cfg, preproc_n, preproc_pos,
                     sampler2, seed + 16, 1.0, 0.0,
+                    stage2_sigmas=sigmas2,
                 )
 
             latent_s2 = _stage_denoise(
