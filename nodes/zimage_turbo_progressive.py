@@ -187,7 +187,17 @@ def _resolve_sigmas(model, scheduler_name: str, steps: int):
     return sigmas
 
 
-def adjust_latent_size(latent: dict, factor: float) -> dict:
+def _coerce_latent(latent):
+    """Accept LATENT dict OR raw Tensor; always return dict."""
+    if isinstance(latent, dict):
+        return latent
+    if torch.is_tensor(latent):
+        return {"samples": latent}
+    raise TypeError(f"latent must be dict or Tensor, got {type(latent).__name__}")
+
+
+def adjust_latent_size(latent, factor: float):
+    latent = _coerce_latent(latent)
     if factor == 1.0:
         return latent
     samples = latent["samples"]
@@ -201,6 +211,7 @@ def adjust_latent_size(latent: dict, factor: float) -> dict:
 def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
                      sampler, noise_seed, noise_scale, noise_bias,
                      extra_noise_freqs=(1024,), extra_noise_scales=(0.8,)):
+    latent = _coerce_latent(latent)
     if preproc_steps <= 0:
         return latent, False
     latents = latent["samples"]
@@ -228,6 +239,7 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
                    add_noise=True, force_final_denoise=True, extra_noise_freqs=0, extra_noise_scales=0):
+    latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
     eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
