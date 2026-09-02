@@ -44,6 +44,8 @@ _LATENT_SCALING = {
     "none"   : (1.00, 1.00, 1.00),
 }
 
+_REFINE_ENTER_SIGMA = 0.658
+
 
 def _get_sigma_preset(steps: int):
     clamped = max(3, min(steps, 7))
@@ -237,8 +239,6 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage size chain. fast=(0.25,0.5,0.75) quality=(0.5,0.75,1.0) none=(1,1,1). X21 max_quality/fast/max."),
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change."),
-                io.Float.Input("refine_enter_sigma", default=0.658, min=0.0, max=2.0, step=0.05,
-                                tooltip="Stage3 entry sigma — slices sigmas3 tail at ≤ this value. Lower = more detail preservation."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -250,7 +250,7 @@ class ZImageTurboProgressive(io.ComfyNode):
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: str, initial_bias: float, latent_scaling: str,
-                intensity: float, refine_enter_sigma: float,
+                intensity: float,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
                 positive: list | None = None) -> io.NodeOutput:
 
@@ -270,8 +270,8 @@ class ZImageTurboProgressive(io.ComfyNode):
         sigmas1 = _to_tensor(sigmas1_tuple)
         sigmas2 = _to_tensor(sigmas2_tuple)
         sigmas3 = _to_tensor(sigmas3_tuple)
-        if sigmas3 is not None and refine_enter_sigma > 0:
-            sigmas3 = _slice_sigmas_at_entry(sigmas3, refine_enter_sigma)
+        if sigmas3 is not None:
+            sigmas3 = _slice_sigmas_at_entry(sigmas3, _REFINE_ENTER_SIGMA)
         if sigmas1 is None or sigmas1.numel() < 2:
             print("[ZImageTurboProgressive] ERROR: sigma preset returned no stage1 sigmas.")
             return io.NodeOutput(latent_input)

@@ -23,7 +23,7 @@
 | **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + STRING 当前值 + `next_int`（seed + 1）—— STRING 输出可直接喂给 `filename_prefix` 等需要字符串的下游 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
-| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | BRAVO/ALPHA hardcoded sigma preset；`latent_scaling`（fast/quality/none）尺寸链；`intensity`（V2 Adv 公式）；`refine_enter_sigma`（ZTPLU 语义）切 stage3 sigma tail；`creativity_mode` stage2 scramble；per-stage sampler |
+| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | BRAVO/ALPHA hardcoded sigma preset；`latent_scaling`（fast/quality/none）尺寸链；`intensity`（V2 Adv 公式）；`creativity_mode` stage2 scramble；per-stage sampler |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -140,7 +140,6 @@ pip install -r requirements.txt
 | `initial_bias` | FLOAT | 0.0 | 非零时跑小尺寸探针补偿 preset sigmas1<1.0 的低频缺口 |
 | `latent_scaling` | COMBO | `fast` | X21 风格 `(stage0, stage1, stage2)` 缩放因子；`stage3` 永远 = 输入尺寸：`fast`=(0.25, 0.5, 1.0) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
 | `intensity` | FLOAT | 1.0 | 初始噪声 overdose=`(intensity-1)*0.4` + bias level=`intensity*4-1`；1.0 = 无变化 |
-| `refine_enter_sigma` | FLOAT | 0.658 | stage3 sigma tail 切片阈值：≤ 此值的部分参与 stage3；越低 → 细节保留越强 |
 | `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | COMBO | euler / euler / dpmpp_sde | 三阶段独立采样器（`comfy.samplers.SAMPLER_NAMES` 全集）|
 
 #### 关键机制说明
