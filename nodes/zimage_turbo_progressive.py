@@ -256,6 +256,15 @@ def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype,
     return noise
 
 
+def _slice_sigmas_by_steps(sigmas, start_step: int, num_steps: int):
+    if sigmas is None or sigmas.numel() < 2:
+        return sigmas
+    n_total = sigmas.numel() - 1
+    i0 = max(0, min(start_step, n_total))
+    i1 = max(i0 + 1, min(start_step + num_steps + 1, sigmas.numel()))
+    return sigmas[i0:i1]
+
+
 def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
     model_sampling = model.get_model_object("model_sampling")
     discard_set = ("dpm_2", "dpm_2_ancestral", "uni_pc", "uni_pc_bh2")
@@ -445,11 +454,20 @@ class ZImageTurboProgressive(io.ComfyNode):
             model_sampling.shift = shift
 
         try:
-            sigmas1 = _resolve_sigmas(model, stage1_scheduler, stage1_sampler, s1_steps)
-            sigmas2 = _resolve_sigmas(model, stage2_scheduler, stage2_sampler, s2_steps)
-            sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_base, s3_steps)
-            if sigmas1 is None or sigmas2 is None or sigmas3 is None:
+            sigmas_full = _resolve_sigmas(model, stage1_scheduler, stage1_sampler, steps)
+            if sigmas_full is None:
                 print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
+                return io.NodeOutput(latent_input)
+            if stage2_scheduler != stage1_scheduler or stage3_scheduler != stage1_scheduler:
+                print("[ZImageTurboProgressive] WARNING: stage2/stage3 scheduler ignored in sigma-step-range mode; all stages use stage1_scheduler.")
+            if stage2_sampler != stage1_sampler or s3_base != stage1_sampler:
+                print("[ZImageTurboProgressive] WARNING: stage2/stage3 sampler ignored in sigma-step-range mode; all stages use stage1_sampler.")
+
+            sigmas1 = _slice_sigmas_by_steps(sigmas_full, 0,                s1_steps)
+            sigmas2 = _slice_sigmas_by_steps(sigmas_full, s1_steps,         s2_steps)
+            sigmas3 = _slice_sigmas_by_steps(sigmas_full, s1_steps+s2_steps, s3_steps)
+            if sigmas1 is None or sigmas2 is None or sigmas3 is None:
+                print("[ZImageTurboProgressive] ERROR: sigma slicing failed.")
                 return io.NodeOutput(latent_input)
 
             latent_input = {**latent_input, "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"])}
