@@ -23,7 +23,7 @@
 | **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + STRING 当前值 + `next_int`（seed + 1）—— STRING 输出可直接喂给 `filename_prefix` 等需要字符串的下游 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
-| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive upscale 编排 | 3 阶段 sigma 切片接力（共用 8 步 schedule 切 2:4:2）；stage 间 latent 域放大 |
+| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive upscale 编排 | 3 阶段 progressive upscale（2:4:2 step split）；creativity_mode / detailed_refiner / spectral_tilt / start_step+end_step sigma 切片 / per-stage sampler+scheduler / return_leftover_noise 一站式开关 |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -122,7 +122,7 @@ pip install -r requirements.txt
 
 ### 🎯 ZImageTurboProgressive（菜单：ZSimple-Nodes/sampling）
 
-**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale。每 stage 用各自独立的 hardcoded sigma 序列（preset），stage 接力 = latent 接力（前 stage 输出作下一 stage 输入），不是 sigma 切片。
+**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale（按 2:4:2 步数比例）。每 stage 跑各自的 scheduler 序列，stage 接力 = latent 接力（前 stage 输出作下一 stage 输入）。设计定稿见 `docs/research/2026-zimage-turbo-fusion-plan.md`。
 
 #### 核心输入
 
@@ -133,28 +133,35 @@ pip install -r requirements.txt
 | `positive` | CONDITIONING | — | 主条件 |
 | `positive_stg2` / `positive_stg3` | CONDITIONING（可选） | — | stage 2/3 单独条件；留空回退 positive |
 | `cfg` | FLOAT | 1.0 | Z-Image Turbo 是 CFG-distilled，推荐 1.0 |
-| `seed` | INT | 0 | stage1 用此 seed；stage2/3 用 `seed+16`、`seed+32` 派生 |
+| `seed` | INT | 0 | stage1 用此 seed；stage2/3 用 `seed+16`、`696969` 派生 |
 | `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；0 禁用 |
 | `add_noise` | COMBO | `enable` | stage1 是否加噪；inpainting 设为 `disable` |
-| `sigma_preset` | COMBO | `bravo_8` | per-stage sigma 序列；`alpha_8`（细节强 refiner）/ `bravo_8`（默认）|
+| `return_leftover_noise` | COMBO | `disable` | stage3 是否保留残噪（链式下游用） |
+| `steps` | INT | 8 | 总步数按 2:4:2 分配 |
+| `start_step` / `end_step` | INT | 0 / 8 | 单阶段用 sigma 切片；progressive 时由 latent 接力覆盖 |
+| `creativity_mode` | COMBO | `off` | `off` / `scrambled`（构图变体）/ `refined_1/2/3`（N 步 coherence 恢复）|
 | `upscale_factor` | FLOAT | 2.0 | 单 stage 倍率；3 stage 总放大 = `factor²` |
-| `sampler` | COMBO | `euler` | 3 stage 共用 solver |
+| `detailed_refiner` | BOOL | True | stage3 切 dpmpp_sde 增强高频细节 |
+| `spectral_tilt` | COMBO | `none` | Colored Noise Sampling 频域塑形；5 档预设：`none` / `stage3_H` / `stages12x_H` / `stages12x_l` / `stages123_H` |
+
+#### 3 阶段独立参数
+
+| 参数 | stage1 | stage2 | stage3 |
+|---|---|---|---|
+| `sampler` | `euler` | `euler` | `dpmpp_sde` |
+| `scheduler` | `normal` | `normal` | `normal` |
 
 可选 8 个 sampler：`euler` / `euler_ancestral` / `dpmpp_2m` / `dpmpp_sde` / `dpmpp_2m_sde` / `dpmpp_3m_sde` / `uni_pc` / `ddim`
-
-#### 3 阶段 sigma 分布（bravo_8 / alpha_8）
-
-每个 stage 跑自己的 sigma 序列，stage 之间**不连续**（stage2 起步 sigma 高于 stage1 末）——这是 progressive relay 的核心：
-- `bravo_8`：stage1 跑 2 sigma → stage2 跑 6 sigma（从 sigma≈0.935 起，**高于** stage1 末 0.920）→ stage3 跑 3 sigma
-- `alpha_8`：stage1 跑 3 sigma → stage2 跑 5 sigma → stage3 跑 3 sigma（更激进）
+可选 6 个 scheduler：`normal` / `karras` / `exponential` / `sgm_uniform` / `ddim_uniform` / `beta`
 
 #### 输出
 
-- `latent_output`：LATENT（stage3 结束后的 final latent）
+- `latent_output`：LATENT（denoise 完成后的 final latent）
 
 > [!WARNING]
 > - **shift 默认 3.5 与 Z-Image Turbo 官方推荐一致**；其它值（特别是 ≥4）会导致生成图"melted/smeared"（社区实测）。
 > - **upscale_factor > 1.0** 会让 latent 输出尺寸 = 输入 × `factor²`（例：factor=2 → 4× 放大）。如需保持输入尺寸，factor=1.0。
+> - **return_leftover_noise=enable** 会让 stage3 保留残 σ 噪波，可能让下游节点处理异常——确认下游需要时再启用。
 
 ---
 
