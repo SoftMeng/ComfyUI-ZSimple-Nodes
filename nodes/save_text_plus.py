@@ -9,26 +9,12 @@ Design parallels SaveImagePlus:
 
 import json
 import os
-from datetime import datetime
 
 from comfy_api.latest import io
 
 import folder_paths
 
-
-def _resolve_subfolder(
-    template: str, seed: int, width: int, height: int
-) -> str:
-    """Resolve subfolder template — supports %date%, %seed%, %width%,
-    %height%. Empty string means no subfolder (save to output_dir root)."""
-    now = datetime.now()
-    result = template
-    result = result.replace("%date:yyyy-MM-dd%", now.strftime("%Y-%m-%d"))
-    result = result.replace("%date", now.strftime("%Y-%m-%d"))
-    result = result.replace("%seed%", str(seed))
-    result = result.replace("%width%", str(width))
-    result = result.replace("%height%", str(height))
-    return result
+from ._save_common import resolve_subfolder, workflow_json_from_extra
 
 
 class SaveTextPlus(io.ComfyNode):
@@ -114,9 +100,7 @@ class SaveTextPlus(io.ComfyNode):
         extra_pnginfo=None,
     ):
         output_dir = folder_paths.get_output_directory()
-        subfolder = _resolve_subfolder(
-            subfolder_template, seed=0, width=1, height=1
-        )
+        subfolder = resolve_subfolder(subfolder_template)
         full_output_folder = (
             os.path.join(output_dir, subfolder) if subfolder else output_dir
         )
@@ -144,16 +128,8 @@ class SaveTextPlus(io.ComfyNode):
             f.write(body_to_write)
             byte_count = f.tell()
 
-        workflow_json = ""
-        if extra_pnginfo is not None:
-            workflow_data = extra_pnginfo.get("workflow") or extra_pnginfo.get(
-                "prompt"
-            )
-            if workflow_data is not None:
-                workflow_json = json.dumps(workflow_data, ensure_ascii=False)
-
         return io.NodeOutput(
             full_save_path,
             byte_count,
-            workflow_json,
+            workflow_json_from_extra(extra_pnginfo),
         )

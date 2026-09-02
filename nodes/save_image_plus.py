@@ -8,7 +8,7 @@ Improvements over the native SaveImage:
 - WebP lossless mode + quality/method trade-off
 - Metadata embedding policy: none / prompt_only / all (JPEG EXIF size guarded)
 - Subfolder template (independent field, default %date:yyyy-MM-dd%)
-- User-configurable counter zero-padding width
+- Per-format counter resume (png/jpeg/webp/jxl do not collide)
 - Returns saved paths and first filename as STRING outputs (chainable)
 
 JPEG XL support requires `pillow-jxl-plugin` to be installed:
@@ -18,8 +18,6 @@ If the plugin is missing and format=jxl is selected, the node raises a clear err
 
 import json
 import os
-from datetime import datetime
-from pathlib import PurePath
 
 import numpy as np
 from PIL import ExifTags, Image
@@ -28,6 +26,8 @@ from PIL.PngImagePlugin import PngInfo
 from comfy_api.latest import io
 
 import folder_paths
+
+from ._save_common import resolve_subfolder, resume_counter, workflow_json_from_extra
 
 _JPEG_EXIF_SAFETY_BYTES = 60000
 
@@ -109,21 +109,6 @@ class SaveImagePlus(io.ComfyNode):
         )
 
     @staticmethod
-    def _resolve_subfolder(
-        template: str, seed: int, width: int, height: int
-    ) -> str:
-        """Resolve subfolder template — supports %date%, %seed%, %width%,
-        %height%. Empty string means no subfolder (save to output_dir root)."""
-        now = datetime.now()
-        result = template
-        result = result.replace("%date:yyyy-MM-dd%", now.strftime("%Y-%m-%d"))
-        result = result.replace("%date", now.strftime("%Y-%m-%d"))
-        result = result.replace("%seed%", str(seed))
-        result = result.replace("%width%", str(width))
-        result = result.replace("%height%", str(height))
-        return result
-
-    @classmethod
     def _build_png_metadata(
         cls, embed_mode: str, prompt, extra_pnginfo
     ) -> PngInfo | None:
@@ -185,38 +170,15 @@ class SaveImagePlus(io.ComfyNode):
     ):
         output_dir = folder_paths.get_output_directory()
         height, width = images[0].shape[1], images[0].shape[0]
-
-        # Resolve subfolder template (single-purpose field).
-        subfolder = cls._resolve_subfolder(
-            subfolder_template, seed=0, width=width, height=height
-        )
-        full_output_folder = (
-            os.path.join(output_dir, subfolder) if subfolder else output_dir
-        )
-        os.makedirs(full_output_folder, exist_ok=True)
+        subfolder = resolve_subfolder(subfolder_template, width=width, height=height)
+        full_output_folder = os.path.join(output_dir, subfolder) if subfolder else output_dir
 
         paths: list[str] = []
         results: list[dict] = []
         first_filename: str = ""
-
         pad = max(1, int(filename_number_padding))
 
-        # Resume counter from existing files to avoid overwrite.
-        counter = 1
-        try:
-            for name in os.listdir(full_output_folder):
-                p = PurePath(name)
-                if p.suffix.lstrip(".") != format:
-                    continue
-                if not p.stem.startswith(f"{filename_prefix}_"):
-                    continue
-                suffix = p.stem[len(filename_prefix) + 1:]
-                try:
-                    counter = max(counter, int(suffix) + 1)
-                except ValueError:
-                    pass
-        except FileNotFoundError:
-            pass
+        counter = resume_counter(full_output_folder, filename_prefix, format)
 
         for image_tensor in images:
             array = np.clip(
@@ -277,18 +239,10 @@ class SaveImagePlus(io.ComfyNode):
             counter += 1
 
         # Build workflow_json for downstream nodes (passes through extra_pnginfo['workflow']).
-        workflow_json = ""
-        if extra_pnginfo is not None:
-            workflow_data = extra_pnginfo.get("workflow") or extra_pnginfo.get(
-                "prompt"
-            )
-            if workflow_data is not None:
-                workflow_json = json.dumps(workflow_data, ensure_ascii=False)
-
         return io.NodeOutput(
             images,
             ",".join(paths),
             first_filename,
-            workflow_json,
+            workflow_json_from_extra(extra_pnginfo),
             ui={"images": results},
         )
