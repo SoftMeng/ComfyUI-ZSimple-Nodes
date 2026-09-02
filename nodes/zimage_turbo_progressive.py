@@ -162,8 +162,8 @@ def _resolve_spectral_for_stage(stage_idx: int, stage: str, tilt_stages: str,
 
 
 def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
-    g = torch.Generator().manual_seed(seed)
-    noise = torch.randn(shape, generator=g, dtype=dtype, device=device)
+    g = torch.manual_seed(seed)
+    noise = torch.randn(shape, generator=g, dtype=dtype, device="cpu").to(device=device)
     if noise_scale != 1.0:
         noise = noise * noise_scale
     if noise_bias != 0.0:
