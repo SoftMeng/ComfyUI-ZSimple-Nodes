@@ -122,7 +122,7 @@ pip install -r requirements.txt
 
 ### 🎯 ZImageTurboProgressive（菜单：ZSimple-Nodes/sampling）
 
-**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale（按 2:4:2 步数比例）。每 stage 跑各自的 scheduler 序列，stage 接力 = latent 接力（前 stage 输出作下一 stage 输入）。设计定稿见 `docs/research/2026-zimage-turbo-fusion-plan.md`。
+**用途**：Z-Image Turbo 专用 3 阶段 progressive upscale。Sigma 序列来自 V2 advanced 风格的 **BRAVO/ALPHA hardcoded preset**（每 stage 独立、不连续 sigma），latent 接力 = 前 stage 输出作下一 stage 输入。设计定稿见 `docs/research/2026-zimage-turbo-fusion-plan.md`，接力方式参考 `ComfyUI-ZImagePowerNodes/zsampler_turbo_2_advanced.py`。
 
 #### 核心输入
 
@@ -137,7 +137,11 @@ pip install -r requirements.txt
 | `shift` | FLOAT | 3.5 | logit-normal 时间分布重映射；Z-Image Turbo ≈ 3.5；0 禁用 |
 | `add_noise` | COMBO | `enable` | stage1 是否加噪；inpainting 设为 `disable` |
 | `return_leftover_noise` | COMBO | `disable` | stage3 是否保留残噪（链式下游用） |
-| `steps` | INT | 8 | 总步数按 2:4:2 分配 |
+| `steps` | INT | 8 | 总步数（8 → bravo_8，3-7 → alpha_N） |
+
+> [!WARNING]
+> - **per-stage scheduler 实际不起作用**：sigma 由 preset 硬编码（bravo_8 / alpha_N）决定，与用户选的 scheduler 无关。
+> - **`start_step` / `end_step` 不起作用**：sigma 切片由 preset 决定，不走 sigma_step_range。
 | `start_step` / `end_step` | INT | 0 / 8 | 单阶段用 sigma 切片；progressive 时由 latent 接力覆盖 |
 | `creativity_mode` | COMBO | `off` | `off` / `scrambled`（构图变体）/ `refined_1/2/3`（N 步 coherence 恢复）|
 | `upscale_factor` | FLOAT | 2.0 | 单 stage 倍率；3 stage 总放大 = `factor²` |

@@ -185,9 +185,12 @@ _SIGMA_PRESETS_BY_NAME = {
 
 
 def _get_sigma_preset(steps: int):
-    clamped = max(3, min(steps, 8))
-    name = f"alpha_{clamped}" if clamped <= 8 and f"alpha_{clamped}" in _SIGMA_PRESETS_BY_NAME else "alpha_8"
-    return _SIGMA_PRESETS_BY_NAME[name]
+    clamped = max(3, min(steps, 9))
+    if clamped <= 7:
+        return SIGMA_PRESETS_BY_NAME[f"alpha_{clamped}"]
+    if clamped == 8:
+        return SIGMA_PRESETS_BY_NAME["bravo_8"]
+    return SIGMA_PRESETS_BY_NAME["alpha_8"]
 
 
 def _resolve_sigmas(model, scheduler_name: str, sampler_name: str, steps: int):
@@ -356,12 +359,21 @@ class ZImageTurboProgressive(io.ComfyNode):
         s3_base = "dpmpp_sde" if detailed_refiner else stage3_sampler
         sampler3 = _resolve_spectral_for_stage(2, "stage3", tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
 
-        sigmas1 = _resolve_sigmas(model, stage1_scheduler, stage1_sampler, s1_steps)
-        sigmas2 = _resolve_sigmas(model, stage2_scheduler, stage2_sampler, s2_steps)
-        sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_base, s3_steps)
-        if sigmas1 is None or sigmas2 is None or sigmas3 is None:
-            print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
+        sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps)
+
+        def _to_tensor(tup):
+            if not tup:
+                return None
+            return torch.tensor(list(tup), dtype=torch.float32, device=model.load_device)
+
+        sigmas1 = _to_tensor(sigmas1_tuple)
+        sigmas2 = _to_tensor(sigmas2_tuple)
+        sigmas3 = _to_tensor(sigmas3_tuple)
+        if sigmas1 is None or sigmas1.numel() < 2:
+            print("[ZImageTurboProgressive] ERROR: sigma preset returned no stage1 sigmas.")
             return io.NodeOutput(latent_input)
+        if stage2_scheduler != stage1_scheduler or stage3_scheduler != stage1_scheduler:
+            print("[ZImageTurboProgressive] WARNING: per-stage scheduler ignored — sigma preset is hardcoded (V2 advanced mode).")
 
         preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
                      "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
@@ -388,39 +400,45 @@ class ZImageTurboProgressive(io.ComfyNode):
                 model, latent_input, cond_s1, negative, cfg, sampler1, sigmas1,
                 noise_seed=seed,
                 add_noise=add_noise_bool,
-                force_final_denoise=force_denoise_stg1_stg2 or s2_steps == 0,
+                force_final_denoise=force_denoise_stg1_stg2 or sigmas2 is None,
             )
 
-            latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
-            preproc_pos = positive_stg2 or cond_s1
-            preproc_neg = cond_s1 if cfg > 0 else []
-            if scramble_on:
-                t = latent_s2_in["samples"]
-                t = _scramble_tensor(t, _scramble_counts(seed), seed)
-                latent_s2_in = {**latent_s2_in, "samples": t}
-            if preproc_n > 0:
-                latent_s2_in, _ = _stage2_preproc(
-                    model, latent_s2_in, cfg, preproc_n, preproc_pos,
-                    sampler2, seed + 16, 1.0, 0.0,
+            if sigmas2 is not None:
+                latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
+                preproc_pos = positive_stg2 or cond_s1
+                preproc_neg = cond_s1 if cfg > 0 else []
+                if scramble_on:
+                    t = latent_s2_in["samples"]
+                    t = _scramble_tensor(t, _scramble_counts(seed), seed)
+                    latent_s2_in = {**latent_s2_in, "samples": t}
+                if preproc_n > 0:
+                    latent_s2_in, _ = _stage2_preproc(
+                        model, latent_s2_in, cfg, preproc_n, preproc_pos,
+                        sampler2, seed + 16, 1.0, 0.0,
+                    )
+
+                latent_s2 = _stage_denoise(
+                    model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
+                    noise_seed=seed + 16,
+                    add_noise=False,
+                    force_final_denoise=True,
                 )
-
-            latent_s2 = _stage_denoise(
-                model, latent_s2_in, cond_s2, negative, cfg, sampler2, sigmas2,
-                noise_seed=seed + 16,
-                add_noise=False,
-                force_final_denoise=True,
-            )
-
-            if upscale_factor <= 1.0:
-                latent_s3_in = latent_s2
             else:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
-            latent_s3 = _stage_denoise(
-                model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
-                noise_seed=696969,
-                add_noise=False,
-                force_final_denoise=not return_noise_bool,
-            )
+                latent_s2 = latent_s1
+
+            if sigmas3 is not None:
+                if upscale_factor <= 1.0:
+                    latent_s3_in = latent_s2
+                else:
+                    latent_s3_in = adjust_latent_size(latent_s2, factor=upscale_factor)
+                latent_s3 = _stage_denoise(
+                    model, latent_s3_in, cond_s3, negative, cfg, sampler3, sigmas3,
+                    noise_seed=696969,
+                    add_noise=False,
+                    force_final_denoise=not return_noise_bool,
+                )
+            else:
+                latent_s3 = latent_s2
         finally:
             model_sampling.shift = original_shift
 
