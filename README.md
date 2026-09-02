@@ -20,7 +20,7 @@
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
-| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT / FLOAT / STRING 三格式同输出 + `next_int` 给下游节点预热 |
+| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + `next_int`（seed + 1）给下游节点预热 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
 | **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive upscale 编排 | 3 阶段（构图 / 协调 / 细化）；CFG / shift / 创意 / Spectral-Tilt / Detailed-Refiner 一站式开关 |
@@ -57,16 +57,15 @@ pip install -r requirements.txt
 
 ### 🎲 RandomNumberPlus（菜单：ZSimple-Nodes）
 
-**用途**：随机种子生成器，输出当前 seed 的多种格式 + 下一值。
+**用途**：随机种子生成器，输出当前 seed + 下一值（seed + 1）。
 
 | 特性 | 说明 |
 |---|---|
-| 多格式输出 | INT / FLOAT / STRING（自动转 INT/Float） |
-| 当前 + 下一值 | 同时输出 `seed` 和 `seed + 1` |
+| 多输出 | `int_out`（当前 seed）+ `number_out`（同 int_out，便于不同连接节点命名）+ `next_int`（seed + 1）|
 | 生成后控制 | `randomize` / `increment` / `decrement` / `fixed` —— 由 ComfyUI 前端 widget 处理 |
 | 零依赖 | 仅依赖 ComfyUI V3 API |
 
-**典型用法**：从 `string_out` 拉取字符串种子注入 `CLIPTextEncode`，从 `next_int` 注入下一节点的 KSampler。
+**典型用法**：从 `int_out` / `next_int` 注入下一节点的 KSampler。
 
 ---
 
