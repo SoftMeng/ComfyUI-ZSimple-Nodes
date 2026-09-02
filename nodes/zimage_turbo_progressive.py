@@ -29,12 +29,12 @@ import latent_preview
 SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
 
 _SIGMA_PRESETS_BY_NAME = {
-    "alpha_3" : [(0.991, 0.920), None, None],
-    "alpha_4" : [(0.991, 0.920, 0.500), None, None],
-    "alpha_5" : [(0.991, 0.920, 0.793, 0.500), None, None],
-    "alpha_6" : [(0.991, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "alpha_7" : [(0.991, 0.980, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.300), (0.658, 0.302, 0.0)],
+    "alpha_3" : [(0.991, 0.980, 0.920), (0.942, 0.000), None],
+    "alpha_4" : [(0.991, 0.980, 0.920), (0.942, 0.000), (0.790, 0.000)],
+    "alpha_5" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.620, 0.000)],
+    "alpha_6" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_7" : [(0.991, 0.980, 0.920), (0.935, 0.892, 0.760, 0.000), (0.658, 0.302, 0.000)],
+    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
 }
 
 _LATENT_SCALING = {
@@ -365,7 +365,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     noise_seed=696969,
                     noise_scale=probe_noise_scale,
                     noise_bias=probe_noise_bias,
-                    add_noise=False,
+                    add_noise=True,
                     force_final_denoise=not return_noise_bool,
                 )
                 latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
