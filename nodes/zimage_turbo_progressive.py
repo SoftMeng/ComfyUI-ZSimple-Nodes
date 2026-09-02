@@ -293,77 +293,75 @@ class ZImageTurboProgressive(io.ComfyNode):
         target_h, target_w = latent_input["samples"].shape[-2:]
 
 
-        try:
-            creativity_on = creativity_mode == "on"
-            high_as_a_kite = (seed % 3) == 0
-            scramble_on = creativity_on
-            preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
+        creativity_on = creativity_mode == "on"
+        high_as_a_kite = (seed % 3) == 0
+        preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
 
-            probe_noise_bias = torch.zeros(0, device=model.load_device)
-            probe_noise_scale = initial_noise_scale
-            if initial_bias_level != 0 and add_noise_bool and sigmas1 is not None:
-                probe_hw = (min(64, latent_input["samples"].shape[-2]),
-                            min(64, latent_input["samples"].shape[-1]))
-                pbias, pscale = _estimate_initial_noise_features(
-                    model, cond, negative, sampler1,
-                    sigma_first=float(sigmas1[0].item() if hasattr(sigmas1[0], "item") else sigmas1[0]),
-                    seed=seed, sample_hw=probe_hw,
-                    reference_tensor=latent_input["samples"],
-                )
-                probe_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
-                probe_noise_bias = probe_noise_bias * initial_bias_level
+        probe_noise_bias = torch.zeros(0, device=model.load_device)
+        probe_noise_scale = initial_noise_scale
+        if initial_bias_level != 0 and add_noise_bool and sigmas1 is not None:
+            probe_hw = (min(64, latent_input["samples"].shape[-2]),
+                        min(64, latent_input["samples"].shape[-1]))
+            pbias, pscale = _estimate_initial_noise_features(
+                model, cond, negative, sampler1,
+                sigma_first=float(sigmas1[0].item() if hasattr(sigmas1[0], "item") else sigmas1[0]),
+                seed=seed, sample_hw=probe_hw,
+                reference_tensor=latent_input["samples"],
+            )
+            probe_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
+            probe_noise_bias = probe_noise_bias * initial_bias_level
 
-            if add_noise_bool and creativity_on:
-                t = latent_input["samples"]
+        if add_noise_bool and creativity_on:
+            t = latent_input["samples"]
+            t = _scramble_tensor(t, _scramble_counts(seed), seed)
+            latent_input = {**latent_input, "samples": t}
+
+        latent_s1_in = adjust_latent_size(latent_input, factor=s1_factor)
+
+        latent_s1 = _stage_denoise(
+            model, latent_s1_in, cond, negative, cfg, sampler1, sigmas1,
+            noise_seed=seed,
+            noise_scale=probe_noise_scale,
+            noise_bias=probe_noise_bias,
+            add_noise=add_noise_bool,
+            force_final_denoise=True,
+        )
+
+        if sigmas2 is not None:
+            latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+            if creativity_on:
+                t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
-                latent_input = {**latent_input, "samples": t}
+                latent_s2_in = {**latent_s2_in, "samples": t}
+            if preproc_n > 0:
+                latent_s2_in = _stage2_preproc(
+                    model, latent_s2_in, cfg, preproc_n, cond,
+                    sampler2, seed + 16,
+                )
 
-            latent_s1_in = adjust_latent_size(latent_input, factor=s1_factor)
-
-            latent_s1 = _stage_denoise(
-                model, latent_s1_in, cond, negative, cfg, sampler1, sigmas1,
-                noise_seed=seed,
+            latent_s2 = _stage_denoise(
+                model, latent_s2_in, cond, negative, cfg, sampler2, sigmas2,
+                noise_seed=seed + 16,
                 noise_scale=probe_noise_scale,
                 noise_bias=probe_noise_bias,
-                add_noise=add_noise_bool,
-                force_final_denoise=True,
+                add_noise=True,
+                force_final_denoise=sigmas3 is None,
             )
+        else:
+            latent_s2 = latent_s1
 
-            if sigmas2 is not None:
-                latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
-                if creativity_on:
-                    t = latent_s2_in["samples"]
-                    t = _scramble_tensor(t, _scramble_counts(seed), seed)
-                    latent_s2_in = {**latent_s2_in, "samples": t}
-                if preproc_n > 0:
-                    latent_s2_in = _stage2_preproc(
-                        model, latent_s2_in, cfg, preproc_n, cond,
-                        sampler2, seed + 16,
-                    )
-
-                latent_s2 = _stage_denoise(
-                    model, latent_s2_in, cond, negative, cfg, sampler2, sigmas2,
-                    noise_seed=seed + 16,
-                    noise_scale=probe_noise_scale,
-                    noise_bias=probe_noise_bias,
-                    add_noise=True,
-                    force_final_denoise=sigmas3 is None,
-                )
-            else:
-                latent_s2 = latent_s1
-
-            if sigmas3 is not None:
-                latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-                latent_s3 = _stage_denoise(
-                    model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
-                    noise_seed=696969,
-                    noise_scale=probe_noise_scale,
-                    noise_bias=probe_noise_bias,
-                    add_noise=True,
-                    force_final_denoise=not return_noise_bool,
-                )
-                latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
-            else:
-                latent_s3 = latent_s2
+        if sigmas3 is not None:
+            latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+            latent_s3 = _stage_denoise(
+                model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
+                noise_seed=696969,
+                noise_scale=probe_noise_scale,
+                noise_bias=probe_noise_bias,
+                add_noise=True,
+                force_final_denoise=not return_noise_bool,
+            )
+            latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
+        else:
+            latent_s3 = latent_s2
 
         return io.NodeOutput(latent_s3)
