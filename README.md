@@ -16,11 +16,13 @@
 
 ---
 
-## ✨ 为什么用它？
+## ✨ 三个节点，各自解决一个具体痛点
 
-ComfyUI 自带的 `SaveImage` 节点已足够基础，但当你需要更精细的控制时——比如**JPEG q 值、PNG 压缩级别、WebP 无损模式、metadata 嵌入策略**——你会发现原生节点要么不支持，要么写死。
-
-`ComfyUI-ZSimple-Nodes` 是一个**渐进生长**的个人插件，每个节点都解决一个具体痛点，单文件单职责。**当前已上线的三个节点都经过 2026 图像压缩最佳实践审查**。
+| 节点 | 痛点 | 关键特性 |
+|---|---|---|
+| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT / FLOAT / STRING 三格式同输出 + `next_int` 给下游节点预热 |
+| **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
+| **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -69,18 +71,7 @@ pip install -r requirements.txt
 
 ### 🖼️ SaveImagePlus（菜单：ZSimple-Nodes/image）
 
-**用途**：替代原生 SaveImage，支持多格式 + 精细压缩控制 + 智能 metadata 保护。
-
-| 能力 | 原生 SaveImage | SaveImagePlus |
-|---|---|---|
-| PNG / JPEG / WebP / **JXL** 输出 | 仅 PNG | ✅ |
-| 用户控制质量 | ❌（固定 `compress_level=4`） | ✅（按格式分别控制） |
-| WebP 无损模式 | ❌ | ✅（`webp_lossless=on`） |
-| JPEG chroma 控制 | ❌ | ✅（`4:4:4` / `4:2:0`） |
-| Metadata 细粒度策略 | 全局开关 | ✅（`none` / `prompt_only` / `all`） |
-| **JPEG EXIF 64KB 保护** | 静默截断 | ✅（自动降级） |
-| 返回保存路径 | ❌ | ✅（STRING 输出，可链式） |
-| 可续接 counter | ❌（每次都 _00001 覆盖） | ✅（扫描目录续接） |
+**用途**：单节点保存图像到多种格式，精细控制压缩参数与 metadata 嵌入策略。
 
 #### 压缩参数（2026 最佳实践默认值）
 
@@ -97,7 +88,7 @@ pip install -r requirements.txt
 
 #### Counter 续接（避免覆盖）
 
-每次 `execute()` 启动时扫描目标子目录，按 `<filename>_prefix + ext` 过滤已有文件，取最大 `_NNNNN + 1` 作为起始 counter；目录为空时仍从 `_00001` 起算。四种格式（png / jpeg / webp / jxl）各自独立计数，同 prefix 切换格式互不串扰。
+每次 `execute()` 启动时扫描目标子目录，按 `<filename_prefix> + ext` 过滤已有文件，取最大 `_NNNNN + 1` 作为起始 counter；目录为空时仍从 `_00001` 起算。四种格式（png / jpeg / webp / jxl）各自独立计数，同 prefix 切换格式互不串扰。
 
 #### 输出
 
@@ -108,7 +99,7 @@ pip install -r requirements.txt
 
 ### 📝 SaveTextPlus（菜单：ZSimple-Nodes/text）
 
-**用途**：保存任意文本到 `.txt` / `.md` / `.json` / `.csv`。与原生 `SaveText` 相比，字段单一职责（filename_prefix / subfolder_template / padding），并暴露 `workflow_json` 输出。
+**用途**：保存任意文本到 `.txt` / `.md` / `.json` / `.csv`，字段单一职责（filename_prefix / subfolder_template / padding），并暴露 `workflow_json` 输出。
 
 **输入**（7 个）：
 - `text`：STRING（必填，多行）
