@@ -113,7 +113,9 @@ class SpectralAdjustedSampler(KSAMPLER):
         )
 
     def _run(self, model, noise, sigmas, *args, **kwargs):
-        base_noise_sampler = kwargs.pop("noise_sampler", None) or (lambda *a, **kw: torch.randn_like(noise))
+        base_noise_sampler = kwargs.pop("noise_sampler", None)
+        if base_noise_sampler is None:
+            base_noise_sampler = (lambda *a, **kw: torch.randn_like(noise))
         sig = float(sigmas[0].mean().detach().cpu())
         if isinstance(self._alpha, (list, tuple)) and len(self._alpha) == 2:
             s0, s1 = self._range
@@ -123,7 +125,7 @@ class SpectralAdjustedSampler(KSAMPLER):
         else:
             alpha = float(self._alpha)
         custom = (lambda *a, **kw: _adjust_spectral_distribution(
-            base_noise_sampler(sig, *a, **kw), alpha=alpha))
+            base_noise_sampler(*a, **kw), alpha=alpha))
         return self._inner.sampler_function(model, noise, sigmas, *args,
                                             noise_sampler=custom, **kwargs)
 
@@ -152,13 +154,14 @@ def _resolve_sampler(name_or):
     return sampler_object(name_or)
 
 
-def _resolve_spectral_for_stage(stage_idx: int, stage: str, tilt_stages: str,
+def _resolve_spectral_for_stage(stage_idx: int, tilt_stages: str,
                                  alpha_tilting, alpha_sharpness,
                                  base_name: str) -> KSAMPLER:
     if str(stage_idx + 1) not in tilt_stages:
         return _resolve_sampler(base_name)
-    tilt_sampler = DPMPP_SDEss if base_name == "dpmpp_sde" or "dpmpp_sde" in base_name else EulerAss
-    return tilt_sampler(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
+    if "dpmpp_sde" in base_name:
+        return DPMPP_SDEss(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
+    return EulerAss(alpha_tilting=tuple(alpha_tilting), alpha_sharpness=alpha_sharpness)
 
 
 def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype, device):
@@ -171,23 +174,6 @@ def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype,
                           dtype=dtype, device=device)
         noise = noise + bias
     return noise
-
-
-_SIGMA_PRESETS_BY_NAME = {
-    "alpha_3" : [(0.991, 0.920), None, None],
-    "alpha_4" : [(0.991, 0.920, 0.500), None, None],
-    "alpha_5" : [(0.991, 0.920, 0.793, 0.500), None, None],
-    "alpha_6" : [(0.991, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "alpha_7" : [(0.991, 0.980, 0.920, 0.870, 0.793, 0.500, 0.300), None, None],
-    "alpha_8" : [(0.991, 0.980, 0.920, 0.935, 0.900, 0.875, 0.750, 0.300), None, None],
-    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.300), (0.658, 0.302, 0.0)],
-}
-
-
-def _get_sigma_preset(steps: int):
-    clamped = max(3, min(steps, 8))
-    name = f"alpha_{clamped}" if clamped <= 8 and f"alpha_{clamped}" in _SIGMA_PRESETS_BY_NAME else "alpha_8"
-    return _SIGMA_PRESETS_BY_NAME[name]
 
 
 def _resolve_sigmas(model, scheduler_name: str, steps: int):
@@ -226,7 +212,7 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
                 model.get_model_object("model_sampling"), "normal", 2)
         freqs = extra_noise_freqs if i == 0 else (0,)
         scales = extra_noise_scales if i == 0 else (0,)
-        latents = _stage_denoise(
+        out_dict = _stage_denoise(
             model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
             sampler, sigmas,
             noise_seed=noise_seed + i,
@@ -234,7 +220,8 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
             add_noise=add_noise,
             force_final_denoise=True,
             extra_noise_freqs=freqs, extra_noise_scales=scales,
-        )["samples"]
+        )
+        latents = out_dict["samples"]
     return {"samples": latents}, add_noise
 
 
@@ -260,13 +247,14 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
                                        noise_bias=0.0, dtype=x0.dtype, device=device)
             eps = eps + F.interpolate(low_noise, size=(H, W), mode='bilinear', align_corners=False)
     callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
-    return comfy.sample.sample_custom(
+    samples = comfy.sample.sample_custom(
         model, eps, cfg, sampler_obj, sigmas,
         conditioning, negative, x0,
         noise_mask=None, callback=callback,
         disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
         seed=noise_seed,
     )
+    return {"samples": samples}
 
 
 class ZImageTurboProgressive(io.ComfyNode):
@@ -336,10 +324,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         cond_s1 = positive or []
         cond_s2 = positive_stg2 or cond_s1
         cond_s3 = positive_stg3 or cond_s2
-        if cfg > 0:
-            negative = cond_s1
-        else:
-            negative = []
+        negative = cond_s1 if cfg > 0 else []
         preproc_n = {"off": 0, "scrambled": 0, "refined_1": 1,
                      "refined_2": 2, "refined_3": 3}.get(creativity_mode, 0)
         scramble_on = creativity_mode == "scrambled"
@@ -347,23 +332,26 @@ class ZImageTurboProgressive(io.ComfyNode):
         tilt_entry = next(p for p in SPECTRAL_TILT_PRESETS if p[0] == spectral_tilt)
         _, tilt_stages, alpha_tilting, alpha_sharpness = tilt_entry
 
-        sampler1 = _resolve_spectral_for_stage(0, "stage1", tilt_stages, alpha_tilting, alpha_sharpness, stage1_sampler)
-        sampler2 = _resolve_spectral_for_stage(1, "stage2", tilt_stages, alpha_tilting, alpha_sharpness, stage2_sampler)
+        sampler1 = _resolve_spectral_for_stage(0, tilt_stages, alpha_tilting, alpha_sharpness, stage1_sampler)
+        sampler2 = _resolve_spectral_for_stage(1, tilt_stages, alpha_tilting, alpha_sharpness, stage2_sampler)
         s3_base = "dpmpp_sde" if detailed_refiner else stage3_sampler
-        sampler3 = _resolve_spectral_for_stage(2, "stage3", tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
-
-        sigmas1 = _resolve_sigmas(model, stage1_scheduler, s1_steps)
-        sigmas2 = _resolve_sigmas(model, stage2_scheduler, s2_steps)
-        sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_steps)
-        if sigmas1 is None or sigmas2 is None or sigmas3 is None:
-            print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
-            return io.NodeOutput(latent_input)
+        sampler3 = _resolve_spectral_for_stage(2, tilt_stages, alpha_tilting, alpha_sharpness, s3_base)
 
         model_sampling = model.get_model_object("model_sampling")
         original_shift = getattr(model_sampling, "shift", None)
         if shift > 0:
             model_sampling.shift = shift
+
         try:
+            sigmas1 = _resolve_sigmas(model, stage1_scheduler, s1_steps)
+            sigmas2 = _resolve_sigmas(model, stage2_scheduler, s2_steps)
+            sigmas3 = _resolve_sigmas(model, stage3_scheduler, s3_steps)
+            if sigmas1 is None or sigmas2 is None or sigmas3 is None:
+                print("[ZImageTurboProgressive] ERROR: sigma generation failed; check scheduler name.")
+                return io.NodeOutput(latent_input)
+
+            latent_input = {**latent_input, "samples": comfy.sample.fix_empty_latent_channels(model, latent_input["samples"])}
+
             if add_noise_bool and scramble_on:
                 t = latent_input["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
@@ -380,7 +368,6 @@ class ZImageTurboProgressive(io.ComfyNode):
 
             latent_s2_in = adjust_latent_size(latent_s1, factor=upscale_factor)
             preproc_pos = positive_stg2 or cond_s1
-            preproc_neg = cond_s1 if cfg > 0 else []
             if scramble_on:
                 t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
@@ -409,11 +396,6 @@ class ZImageTurboProgressive(io.ComfyNode):
                 force_final_denoise=not return_noise_bool,
             )
         finally:
-            if shift > 0:
-                if original_shift is None:
-                    if hasattr(model_sampling, "shift"):
-                        delattr(model_sampling, "shift")
-                else:
-                    model_sampling.shift = original_shift
+            model_sampling.shift = original_shift
 
         return io.NodeOutput(latent_s3)
