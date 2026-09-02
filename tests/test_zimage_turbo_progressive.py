@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from nodes.zimage_turbo_progressive import (
     _scramble_counts,
     _get_sigma_preset,
+    _generate_noise,
     _slice_sigmas_at_entry,
     _LATENT_SCALING,
     adjust_latent_size,
@@ -127,3 +128,26 @@ def test_latent_scaling_field_default_fast():
     schema = ZImageTurboProgressive.define_schema()
     field = next(i for i in schema.inputs if getattr(i, "name", None) == "latent_scaling")
     assert getattr(field, "default", None) == "fast"
+
+
+def test_generate_noise_empty_tensor_sentinel_is_noop():
+    import torch
+    out = _generate_noise(
+        seed=0, shape=(1, 4, 8, 8),
+        noise_bias=torch.zeros(0), noise_scale=1.0,
+        dtype=torch.float32, device="cpu",
+    )
+    assert out.shape == (1, 4, 8, 8)
+
+
+def test_generate_noise_4d_bias_adds_correctly():
+    import torch
+    bias = torch.zeros(1, 4, 1, 1)
+    bias[..., 0, 0] = 0.5
+    out = _generate_noise(
+        seed=0, shape=(1, 4, 8, 8),
+        noise_bias=bias, noise_scale=1.0,
+        dtype=torch.float32, device="cpu",
+    )
+    assert out.shape == (1, 4, 8, 8)
+    assert torch.allclose(out.mean(dim=(2, 3), keepdim=True), torch.full((1, 4, 1, 1), 0.5), atol=0.05)

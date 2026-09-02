@@ -89,8 +89,10 @@ def _generate_noise(seed: int, shape, *, noise_scale=1.0, noise_bias=0.0, dtype,
         noise = noise * noise_scale.to(device=device, dtype=noise.dtype)
     elif noise_scale != 1.0:
         noise = noise * noise_scale
-    if isinstance(noise_bias, torch.Tensor):
+    if isinstance(noise_bias, torch.Tensor) and noise_bias.numel() > 0:
         noise = noise + noise_bias.to(device=device, dtype=noise.dtype)
+    elif isinstance(noise_bias, torch.Tensor):
+        pass
     elif noise_bias != 0.0:
         bias = torch.full((shape[0], shape[1], 1, 1), float(noise_bias),
                           dtype=dtype, device=device)
