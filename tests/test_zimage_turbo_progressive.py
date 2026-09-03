@@ -150,6 +150,21 @@ def test_define_schema_inputs_count():
     assert len(schema.inputs) == 16
 
 
+def test_define_schema_outputs_count():
+    schema = ZImageTurboProgressive.define_schema()
+    assert len(schema.outputs) == 3
+
+
+def test_define_schema_output_names():
+    schema = ZImageTurboProgressive.define_schema()
+    names = set()
+    for out in schema.outputs:
+        name = getattr(out, "name", None) or (out.get("name") if isinstance(out, dict) else None)
+        if name:
+            names.add(name)
+    assert names == {"latent_stage1", "latent_stage2", "latent_stage3"}
+
+
 def test_define_schema_field_names():
     schema = ZImageTurboProgressive.define_schema()
     names = set()

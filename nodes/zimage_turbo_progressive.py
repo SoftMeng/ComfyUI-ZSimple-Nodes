@@ -285,7 +285,15 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
             ],
-            outputs=[io.Latent.Output("latent_output")],
+            outputs=[
+                io.Latent.Output("latent_stage1",
+                                  tooltip="Stage 1 clean latent. Force-final-denoised to σ=0. Ready for downstream sampler or VAE Decode."),
+                io.Latent.Output("latent_stage2",
+                                  tooltip="Stage 2 clean latent. Force-final-denoised to σ=0. Ready for downstream sampler or VAE Decode."),
+                io.Latent.Output("latent_stage3",
+                                  tooltip="Stage 3 output. Clean (σ=0) when return_leftover_noise=disable; otherwise retains residual σ noise for downstream continuation."),
+            ],
+        )
         )
 
     @classmethod
@@ -416,4 +424,4 @@ class ZImageTurboProgressive(io.ComfyNode):
         else:
             latent_s3 = latent_s2
 
-        return io.NodeOutput(latent_s3)
+        return io.NodeOutput(latent_s1, latent_s2, latent_s3)
