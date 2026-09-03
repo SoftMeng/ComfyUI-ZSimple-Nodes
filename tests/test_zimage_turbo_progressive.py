@@ -17,7 +17,7 @@ from nodes.zimage_turbo_progressive import (
 )
 
 
-def test_get_sigma_preset_steps_8_is_bravo():
+def test_get_sigma_preset_steps_8_is_alpha():
     s1, s2, s3 = _get_sigma_preset(8)
     assert s1 is not None and len(s1) >= 2
     assert s2 is not None and len(s2) >= 2
@@ -27,9 +27,9 @@ def test_get_sigma_preset_steps_8_is_bravo():
 
 def test_get_sigma_preset_steps_5_is_alpha():
     s1, s2, s3 = _get_sigma_preset(5)
-    assert s1 is not None and len(s1) == 3
-    assert s2 is not None and len(s2) == 3
-    assert s3 is not None and len(s3) == 2
+    assert s1 is not None and len(s1) == 2
+    assert s2 is not None and len(s2) >= 2
+    assert s3 is not None and len(s3) >= 2
     assert _SIGMA_PRESETS_BY_NAME["alpha_5"] == (s1, s2, s3)
 
 
@@ -39,21 +39,42 @@ def test_alpha_8_sigmas2_ends_at_zero():
     assert s3[-1] == 0.0
 
 
-def test_get_sigma_preset_steps_over_8_falls_back_to_bravo():
+def test_get_sigma_preset_steps_over_15_falls_back_to_alpha_8():
     s1, s2, s3 = _get_sigma_preset(20)
     assert _SIGMA_PRESETS_BY_NAME["alpha_8"] == (s1, s2, s3)
 
 
-def test_get_sigma_preset_clamps_below_3_to_bravo():
+def test_get_sigma_preset_clamps_below_3_to_alpha_8():
     s1, s2, s3 = _get_sigma_preset(2)
     assert _SIGMA_PRESETS_BY_NAME["alpha_8"] == (s1, s2, s3)
 
 
-def test_get_sigma_preset_alpha_9_and_alpha_10():
-    s1_9, s2_9, s3_9 = _get_sigma_preset(9)
-    assert _SIGMA_PRESETS_BY_NAME["alpha_9"] == (s1_9, s2_9, s3_9)
-    s1_10, s2_10, s3_10 = _get_sigma_preset(10)
-    assert _SIGMA_PRESETS_BY_NAME["alpha_10"] == (s1_10, s2_10, s3_10)
+def test_get_sigma_preset_alpha_9_exact():
+    assert _get_sigma_preset(9) == (
+        _SIGMA_PRESETS_BY_NAME["alpha_9"][0],
+        _SIGMA_PRESETS_BY_NAME["alpha_9"][1],
+        _SIGMA_PRESETS_BY_NAME["alpha_9"][2],
+    )
+
+
+def test_get_sigma_preset_alpha_10_through_alpha_15_valid():
+    for steps in range(10, 16):
+        s1, s2, s3 = _get_sigma_preset(steps)
+        assert s1 == (0.991, 0.920), f"alpha_{steps} stage1 must be (0.991, 0.920)"
+        assert s2[-1] == 0.0, f"alpha_{steps} stage2 must end at 0"
+        assert s3[-1] == 0.0, f"alpha_{steps} stage3 must end at 0"
+        assert all(s2[i] > s2[i+1] for i in range(len(s2)-1)), f"alpha_{steps} s2 not strictly descending"
+        assert all(s3[i] > s3[i+1] for i in range(len(s3)-1)), f"alpha_{steps} s3 not strictly descending"
+        assert len(s2) >= 6 and len(s3) >= 4, f"alpha_{steps} sequences shorter than base"
+
+
+def test_refine_sigma_sequence_invariants():
+    from nodes.zimage_turbo_progressive import _refine_sigma_sequence
+    result = _refine_sigma_sequence([0.935, 0.900, 0.875, 0.820, 0.750, 0.000], 1)
+    assert result[0] == 0.935
+    assert result[-1] == 0.0
+    assert all(result[i] > result[i+1] for i in range(len(result)-1))
+    assert (0.935 + 0.900) / 2 in result, "midpoint must be inserted"
 
 
 def test_latent_scaling_four_modes():
@@ -140,8 +161,8 @@ def test_define_schema_field_names():
         "latent_input", "model", "positive",
         "cfg", "seed",
         "add_noise", "return_leftover_noise",
-        "steps", "creativity_mode", "initial_bias",
-        "latent_scaling", "intensity", "noise_inversion",
+        "steps", "creativity_mode", "noise_bias_offset",
+        "stage_resolution_chain", "noise_strength", "noise_inversion",
         "stage1_sampler", "stage2_sampler", "stage3_sampler",
     }
     missing = expected - names
@@ -153,14 +174,18 @@ def test_define_schema_field_names():
 def test_creativity_mode_is_boolean():
     schema = ZImageTurboProgressive.define_schema()
     field = next(i for i in schema.inputs if getattr(i, "name", None) == "creativity_mode")
-    opts = getattr(field, "options", None)
-    assert opts is not None
-    assert set(opts) == {"off", "on"}
+    assert field.__class__.__name__ == "Boolean", f"creativity_mode must be Boolean, got {field.__class__.__name__}"
 
 
-def test_latent_scaling_field_default_fast():
+def test_noise_inversion_is_boolean():
     schema = ZImageTurboProgressive.define_schema()
-    field = next(i for i in schema.inputs if getattr(i, "name", None) == "latent_scaling")
+    field = next(i for i in schema.inputs if getattr(i, "name", None) == "noise_inversion")
+    assert field.__class__.__name__ == "Boolean", f"noise_inversion must be Boolean, got {field.__class__.__name__}"
+
+
+def test_stage_resolution_chain_default_fast():
+    schema = ZImageTurboProgressive.define_schema()
+    field = next(i for i in schema.inputs if getattr(i, "name", None) == "stage_resolution_chain")
     assert getattr(field, "default", None) == "fast"
 
 

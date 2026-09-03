@@ -1,16 +1,4 @@
-"""Z-Image Turbo 3-stage progressive sampling.
-
-Architecture mirrors ComfyUI-ZImagePowerNodes/zsampler_turbo_core:
-- BRAVO/ALPHA hardcoded sigma presets (author-tuned; empirically
-  beat any scheduler formula at 8-step) — schedule option removed.
-- Stage sizes follow X21 max_quality gentle progression (driven by
-  the latent_scaling IO: fast | quality | none).
-- Stage2 scramble + 1-step coherence preproc (creativity_mode
-  boolean, X21-style). seed%3==0 disables preproc for higher
-  creativity.
-- Probe-calibrated initial noise bias to compensate for preset
-  sigmas starting below 1.0.
-"""
+"""Z-Image Turbo 3-stage progressive sampling."""
 from typing import Any
 
 import torch
@@ -28,37 +16,78 @@ import latent_preview
 
 SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
 
+_SAMPLER_CACHE: dict[str, object] = {}
+
+
+def _cached_sampler(name: str):
+    s = _SAMPLER_CACHE.get(name)
+    if s is None:
+        s = comfy.samplers.sampler_object(name)
+        _SAMPLER_CACHE[name] = s
+    return s
+
 _SIGMA_PRESETS_BY_NAME = {
-    "alpha_3" : [(0.991, 0.980, 0.920), (0.942, 0.000), None],
-    "alpha_4" : [(0.991, 0.980, 0.920), (0.942, 0.000), (0.790, 0.000)],
-    "alpha_5" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.620, 0.000)],
-    "alpha_6" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.658, 0.302, 0.000)],
-    "alpha_7" : [(0.991, 0.980, 0.920), (0.935, 0.892, 0.760, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_3" : [(0.991, 0.920), (0.942, 0.000), (0.710, 0.000)],
+    "alpha_4" : [(0.991, 0.920), (0.935, 0.789, 0.000), (0.710, 0.000)],
+    "alpha_5" : [(0.991, 0.920), (0.935, 0.789, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_6" : [(0.991, 0.920), (0.935, 0.770, 0.690, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_7" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.800, 0.000), (0.658, 0.302, 0.000)],
     "alpha_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
-    "alpha_9" : [(0.991, 0.980, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
-    "alpha_10" : [(0.991, 0.980, 0.920, 0.875, 0.820, 0.780, 0.760), (0.750, 0.620, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_9" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
 }
 
+_BASE_S1 = (0.991, 0.920)
+_BASE_S2 = (0.935, 0.900, 0.875, 0.820, 0.750, 0.000)
+_BASE_S3 = (0.658, 0.4556, 0.200, 0.000)
+
+_ALPHA_INSERT_COUNTS: dict[int, tuple[int, int]] = {
+    10: (1, 1),
+    11: (2, 2),
+    12: (3, 3),
+    13: (4, 4),
+    14: (5, 5),
+    15: (6, 6),
+}
+
+
+def _refine_sigma_sequence(sigmas, insert_count: int):
+    if not sigmas or len(sigmas) < 2:
+        sigmas = [1.0, 0.0]
+    sigmas = list(sigmas)
+    while insert_count > 0:
+        new_sequence = [sigmas[0]]
+        for i in range(len(sigmas) - 1):
+            if insert_count > 0:
+                new_sequence.append((sigmas[i] + sigmas[i + 1]) / 2)
+                insert_count -= 1
+            new_sequence.append(sigmas[i + 1])
+        sigmas = new_sequence
+    return sigmas
+
+
+def _get_sigma_preset(steps: int):
+    if 10 <= steps <= 15:
+        s2_inserts, s3_inserts = _ALPHA_INSERT_COUNTS[steps]
+        return (
+            _BASE_S1,
+            tuple(_refine_sigma_sequence(_BASE_S2, s2_inserts)),
+            tuple(_refine_sigma_sequence(_BASE_S3, s3_inserts)),
+        )
+    if 3 <= steps <= 9:
+        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
+    return _SIGMA_PRESETS_BY_NAME["alpha_8"]
+
 _LATENT_SCALING = {
-    # X21 latent_sample_scales: (stage0, stage1, stage2) factors
-    # stage3 always forced back to input via target_size post-resize
-    "fast"      : (0.25, 0.50, 1.00),  # speed: stage1/2 shrink, stage3=input
-    "quality"   : (0.50, 0.75, 1.00),  # default: mid-shrink, stage3=input
-    "aggressive": (0.75, 0.75, 1.00),  # shrink all stages, target_size back to input
-    "none"      : (1.00, 1.00, 1.00),  # full size, no resize
+    "fast"      : (0.25, 0.50, 1.00),
+    "quality"   : (0.50, 0.75, 1.00),
+    "aggressive": (0.5, 0.5, 1.00),
+    "none"      : (1.00, 1.00, 1.00),
 }
 
 _REFINE_ENTER_SIGMA = 0.658
 
 
-def _get_sigma_preset(steps: int):
-    if 3 <= steps <= 10:
-        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
-    return _SIGMA_PRESETS_BY_NAME["alpha_8"]
-
-
 def _slice_sigmas_at_entry(sigmas, enter_sigma: float):
-    """Return tail of `sigmas` at-or-below enter_sigma (ZTPLU semantics)."""
     if sigmas is None or sigmas.numel() == 0:
         return sigmas
     if enter_sigma is None:
@@ -189,7 +218,6 @@ def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
 
 
 def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int) -> torch.Tensor:
-    """Rectified-flow handoff noising: (1-σ)*x0 + σ*noise."""
     noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
                         generator=torch.Generator(device=x0.device).manual_seed(noise_seed))
     return (1.0 - sigma_target) * x0 + sigma_target * noise
@@ -242,16 +270,16 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Combo.Input("return_leftover_noise", options=["enable", "disable"], default="disable",
                                 tooltip="Stage3 leaves residual σ noise in the output latent so downstream sampler nodes can continue from a partially-denoised state."),
                 io.Int.Input("steps", default=8, min=2, max=64,
-                             tooltip="Total denoise steps. 8 selects alpha_8; 3-10 selects alpha_N (alpha_9/10 are user-extended); >10 falls back to alpha_8."),
-                io.Combo.Input("creativity_mode", options=["off", "on"], default="off",
+                             tooltip="Total denoise steps. 8 selects alpha_8; 3-15 selects alpha_N; >15 falls back to alpha_8."),
+                io.Boolean.Input("creativity_mode", default=False,
                                 tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
-                io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
-                                tooltip="Noise bias offset. Internally clamps 20*initial_bias + intensity*4-1 to ±10. For single-knob control, keep `initial_bias=0` and use `intensity` instead. Non-zero values trigger a 64x64 noise probe."),
-                io.Combo.Input("latent_scaling", options=list(_LATENT_SCALING.keys()), default="fast",
+                io.Float.Input("noise_bias_offset", default=0.0, min=-0.5, max=0.5, step=0.1,
+                                tooltip="Noise bias offset. Internally clamps 20*noise_bias_offset + noise_strength*4-1 to ±10. For single-knob control, keep `noise_bias_offset=0` and use `noise_strength` instead. Non-zero values trigger a 64x64 noise probe."),
+                io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="fast",
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
-                io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
-                                tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
-                io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
+                io.Float.Input("noise_strength", default=1.0, min=0.0, max=2.0, step=0.1,
+                                tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
+                io.Boolean.Input("noise_inversion", default=True,
                                 tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
@@ -263,18 +291,18 @@ class ZImageTurboProgressive(io.ComfyNode):
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
-                creativity_mode: str, initial_bias: float, latent_scaling: str,
-                intensity: float, noise_inversion: str,
+                creativity_mode: bool, noise_bias_offset: float, stage_resolution_chain: str,
+                noise_strength: float, noise_inversion: bool,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
-        noise_inversion_bool = noise_inversion == "on"
+        noise_inversion_bool = noise_inversion
         negative = positive or [] if cfg > 0 else []
         cond = positive or []
 
-        s1_factor, s2_factor, s3_factor = _LATENT_SCALING[latent_scaling]
+        s1_factor, s2_factor, s3_factor = _LATENT_SCALING[stage_resolution_chain]
         sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps)
 
         def _to_tensor(tup):
@@ -291,16 +319,16 @@ class ZImageTurboProgressive(io.ComfyNode):
             print("[ZImageTurboProgressive] ERROR: sigma preset returned no stage1 sigmas.")
             return io.NodeOutput(latent_input)
 
-        noise_overdose = (intensity - 1.0) * 0.4
-        noise_bias_level_from_intensity = intensity * 4 - 1
+        noise_overdose = (noise_strength - 1.0) * 0.4
+        noise_bias_level_from_strength = noise_strength * 4 - 1
         initial_noise_scale = 1.0 + noise_overdose
-        initial_bias_level = min(max(20.0 * initial_bias + noise_bias_level_from_intensity,
+        initial_bias_level = min(max(20.0 * noise_bias_offset + noise_bias_level_from_strength,
                                     -10.0), 10.0)
         noise_inversion_effective = noise_inversion_bool and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
 
-        sampler1 = comfy.samplers.sampler_object(stage1_sampler)
-        sampler2 = comfy.samplers.sampler_object(stage2_sampler)
-        sampler3 = comfy.samplers.sampler_object(stage3_sampler)
+        sampler1 = _cached_sampler(stage1_sampler)
+        sampler2 = _cached_sampler(stage2_sampler)
+        sampler3 = _cached_sampler(stage3_sampler)
 
         latent_input = {
             **latent_input,
@@ -309,7 +337,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         target_h, target_w = latent_input["samples"].shape[-2:]
 
 
-        creativity_on = creativity_mode == "on"
+        creativity_on = creativity_mode
         high_as_a_kite = (seed % 3) == 0
         preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
 
