@@ -44,9 +44,16 @@ def test_get_sigma_preset_steps_over_8_falls_back_to_bravo():
     assert _SIGMA_PRESETS_BY_NAME["bravo_8"] == (s1, s2, s3)
 
 
-def test_get_sigma_preset_clamps_below_3_to_alpha_3():
+def test_get_sigma_preset_clamps_below_3_to_bravo():
     s1, s2, s3 = _get_sigma_preset(2)
-    assert _SIGMA_PRESETS_BY_NAME["alpha_3"] == (s1, s2, s3)
+    assert _SIGMA_PRESETS_BY_NAME["bravo_8"] == (s1, s2, s3)
+
+
+def test_get_sigma_preset_alpha_9_and_alpha_10():
+    s1_9, s2_9, s3_9 = _get_sigma_preset(9)
+    assert _SIGMA_PRESETS_BY_NAME["alpha_9"] == (s1_9, s2_9, s3_9)
+    s1_10, s2_10, s3_10 = _get_sigma_preset(10)
+    assert _SIGMA_PRESETS_BY_NAME["alpha_10"] == (s1_10, s2_10, s3_10)
 
 
 def test_latent_scaling_four_modes():
