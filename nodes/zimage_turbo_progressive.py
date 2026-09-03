@@ -282,7 +282,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Boolean.Input("noise_inversion", default=True,
                                 tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
                 io.Int.Input("stage3_count", default=1, min=1, max=4,
-                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). latent_stage3 becomes a list of N."),
+                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). Outputs latent_stage3_0..3 (unused slots = None)."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -292,8 +292,14 @@ class ZImageTurboProgressive(io.ComfyNode):
                                   tooltip="Stage 1 clean latent. Force-final-denoised to σ=0. Ready for downstream sampler or VAE Decode."),
                 io.Latent.Output("latent_stage2",
                                   tooltip="Stage 2 clean latent. Force-final-denoised to σ=0. Ready for downstream sampler or VAE Decode."),
-                io.Latent.Output("latent_stage3",
-                                  tooltip="List of N latents (N=stage3_count). Each entry uses seed+696968+i. Clean (σ=0) when return_leftover_noise=disable; otherwise retains residual σ noise."),
+                io.Latent.Output("latent_stage3_0",
+                                  tooltip="Stage 3 batch slot 0 (noise_seed=696969+0). None when stage3_count<1."),
+                io.Latent.Output("latent_stage3_1",
+                                  tooltip="Stage 3 batch slot 1 (noise_seed=696969+1). None when stage3_count<2."),
+                io.Latent.Output("latent_stage3_2",
+                                  tooltip="Stage 3 batch slot 2 (noise_seed=696969+2). None when stage3_count<3."),
+                io.Latent.Output("latent_stage3_3",
+                                  tooltip="Stage 3 batch slot 3 (noise_seed=696969+3). None when stage3_count<4."),
             ],
         )
 
@@ -409,7 +415,7 @@ class ZImageTurboProgressive(io.ComfyNode):
 
         if sigmas3 is not None:
             latent_s3_base_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-            latent_s3_list: list[dict] = []
+            latent_s3_slots: list = [None] * 4
             for i in range(stage3_count):
                 s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
                 skip_tensor = (
@@ -427,9 +433,9 @@ class ZImageTurboProgressive(io.ComfyNode):
                     force_final_denoise=not return_noise_bool,
                 )
                 latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
-                latent_s3_list.append(latent_s3)
-            latent_s3_out = latent_s3_list
+                latent_s3_slots[i] = latent_s3
+            latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3 = latent_s3_slots
         else:
-            latent_s3_out = [latent_s2]
+            latent_s3_0 = latent_s3_1 = latent_s3_2 = latent_s3_3 = None
 
-        return io.NodeOutput(latent_s1, latent_s2, latent_s3_out)
+        return io.NodeOutput(latent_s1, latent_s2, latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3)
