@@ -1,20 +1,4 @@
-"""Save Image Plus — modern image saver with format, quality, and metadata controls.
-
-Improvements over the native SaveImage:
-- Multi-format: png / jpeg / webp / jxl (user-controlled)
-- Quality slider (1-100) for lossy formats
-- PNG compression level (0-9, default 9 for archival)
-- JPEG subsampling control (4:4:4 / 4:2:0)
-- WebP lossless mode + quality/method trade-off
-- Metadata embedding policy: none / prompt_only / all (JPEG EXIF size guarded)
-- Subfolder template (independent field, default %date:yyyy-MM-dd%)
-- Per-format counter resume (png/jpeg/webp/jxl do not collide)
-- Returns saved paths and first filename as STRING outputs (chainable)
-
-JPEG XL support requires `pillow-jxl-plugin` to be installed:
-    pip install pillow-jxl-plugin
-If the plugin is missing and format=jxl is selected, the node raises a clear error.
-"""
+"""Save Image Plus — multi-format image saver with metadata controls."""
 
 import json
 import os
@@ -32,7 +16,7 @@ from ._save_common import resolve_subfolder, resume_counter, workflow_json_from_
 _JPEG_EXIF_SAFETY_BYTES = 60000
 
 try:
-    import pillow_jxl  # registers JPEG XL support in Pillow  # noqa: F401
+    import pillow_jxl  # noqa: F401
 
     JXL_AVAILABLE = True
 except ImportError:
@@ -126,18 +110,10 @@ class SaveImagePlus(io.ComfyNode):
     def _build_jpeg_exif(
         cls, embed_mode: str, prompt, extra_pnginfo
     ) -> bytes | None:
-        """Build EXIF bytes for JPEG; auto-downgrade to prompt_only if too large.
-
-        JPEG EXIF segment hard cap is ~64KB. If total exceeds
-        _JPEG_EXIF_SAFETY_BYTES, drop extra_pnginfo to avoid silent truncation.
-        """
         if embed_mode == "none" or prompt is None:
             return None
         prompt_bytes = json.dumps(prompt).encode("utf-8")
         exif = Image.Exif()
-        # UserComment is ASCII per EXIF spec; embed UTF-8 bytes directly is
-        # the pragmatic choice ComfyUI's native SaveImage also makes.
-        # Pillow handles encoding via UserComment tag bytes.
         if embed_mode == "all" and extra_pnginfo is not None:
             extra_bytes = b""
             for key in extra_pnginfo:
@@ -223,8 +199,6 @@ class SaveImagePlus(io.ComfyNode):
                         "JPEG XL save requires pillow-jxl-plugin. "
                         "Install with: pip install pillow-jxl-plugin"
                     )
-                # JXL uses distance parameter (lower = higher quality),
-                # not quality 0-100. Approximate quality -> distance.
                 distance = max(0.0, (100 - quality) / 20.0)
                 pil_image.save(full_save_path, "JXL", distance=distance)
 
@@ -238,7 +212,6 @@ class SaveImagePlus(io.ComfyNode):
                 first_filename = file_name
             counter += 1
 
-        # Build workflow_json for downstream nodes (passes through extra_pnginfo['workflow']).
         return io.NodeOutput(
             images,
             ",".join(paths),

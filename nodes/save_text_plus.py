@@ -1,11 +1,4 @@
-"""Save Text Plus — write arbitrary text to .txt / .md / .json / .csv.
-
-Design parallels SaveImagePlus:
-- Single-purpose fields (filename_prefix, subfolder_template, padding).
-- Counter-based naming with user-configurable zero-pad width.
-- Returns the saved path, byte count, and the API workflow_json (for
-  downstream archival nodes).
-"""
+"""Save Text Plus — write arbitrary text to .txt / .md / .json / .csv."""
 
 import json
 import os
@@ -113,7 +106,6 @@ class SaveTextPlus(io.ComfyNode):
         body = text + ("\n" + extra_texts if extra_texts else "")
 
         if format == "json" and embed_json_keys == "pretty":
-            # Try to parse and pretty-print; fall back to verbatim on error.
             try:
                 parsed = json.loads(body)
                 body_to_write = json.dumps(

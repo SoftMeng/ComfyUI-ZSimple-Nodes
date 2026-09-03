@@ -6,15 +6,6 @@ from pathlib import PurePath
 
 
 def resolve_subfolder(template: str, *, width: int = 0, height: int = 0) -> str:
-    """Resolve subfolder template with image/time variables.
-
-    Supports ComfyUI's standard template set:
-      %date:yyyy-MM-dd% / %date% / %year% / %month% / %day%
-      %hour% / %minute% / %second%
-      %width% / %height% / %seed%
-
-    Empty string means no subfolder.
-    """
     now = time.localtime()
     result = template
     result = result.replace("%date:yyyy-MM-dd%", time.strftime("%Y-%m-%d", now))
@@ -31,11 +22,6 @@ def resolve_subfolder(template: str, *, width: int = 0, height: int = 0) -> str:
 
 
 def resume_counter(folder: str, prefix: str, ext: str) -> int:
-    """Find max counter in `folder` for files matching `<prefix>_<n>.<ext>`.
-
-    Returns 1 when the folder is empty or unreadable. Counter is
-    per-format so png / jpeg / webp / jxl siblings never collide.
-    """
     if not os.path.isdir(folder):
         return 1
     needle = f"{prefix}_"
@@ -56,11 +42,6 @@ def resume_counter(folder: str, prefix: str, ext: str) -> int:
 
 
 def workflow_json_from_extra(extra_pnginfo) -> str:
-    """Extract API workflow JSON from extra_pnginfo.
-
-    Returns empty string if unavailable so callers can pass the
-    result straight through to a STRING output.
-    """
     if extra_pnginfo is None:
         return ""
     workflow_data = extra_pnginfo.get("workflow") or extra_pnginfo.get("prompt")

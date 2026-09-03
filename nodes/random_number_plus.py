@@ -1,8 +1,4 @@
-"""Outputs the current seed plus the next seed (seed + 1).
-
-`control_after_generate` is handled by the ComfyUI frontend widget:
-the backend only receives the already-processed current seed and computes +1.
-"""
+"""Outputs the current seed plus the next seed."""
 from comfy_api.latest import io
 
 
