@@ -190,16 +190,19 @@ def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
     return bias, scale
 
 
-def _noise_inverse(x0: torch.Tensor, sigma_target: float, noise_seed: int) -> torch.Tensor:
-    """DemoFusion-style noise inversion: σ·n + (1-σ)·x0.
+def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int) -> torch.Tensor:
+    """DemoFusion-style noise inversion using model.inverse_noise_scaling.
 
-    Converts a fully-denoised latent into an intermediate-σ state so the
-    next stage's UNet can read it as a partially-denoised prior rather
-    than a perfectly clean image (which kills the σ-≤-0.65 retention window).
+    Inverse the stage output via the model's inverse_noise_scaling (preserves
+    distribution under the model's noise schedule) and re-apply noise at
+    sigma_target so the next stage's UNet reads a partially-denoised prior
+    rather than a perfectly clean image (DemoFusion arXiv 2311.16973 §3.3).
     """
+    model_sampling = model.get_model_object("model_sampling")
+    x_inv = model_sampling.inverse_noise_scaling(sigma_target, x0)
     noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
                         generator=torch.Generator(device=x0.device).manual_seed(noise_seed))
-    return sigma_target * noise + (1.0 - sigma_target) * x0
+    return model_sampling.noise_scaling(sigma_target, noise, x_inv, max_denoise=False)
 
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
@@ -259,7 +262,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
                 io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
-                                tooltip="Stage handoff: invert each stage's output to σ≈0.5 as next stage's starting prior (DemoFusion Sec 3.3). Auto-effective only when adjacent stage sizes are equal (latent_scaling=none); for size-changing modes (fast/quality/aggressive) the legacy σ-decay retention is used because noise inversion at small stages (64×64) cascades artifacts when upsampled."),
+                                tooltip="Stage handoff: invert each stage's output to σ≈0.5 as next stage's starting prior (DemoFusion arXiv 2311.16973 §3.3). Auto-effective for size-changing modes (fast/quality/aggressive) where resize chains break the σ-decay retention window. Skipped on none mode (all sizes equal) where the σ-decay window is naturally preserved. Implementation uses model.inverse_noise_scaling + noise_scaling for proper distribution-preserving handoff."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -303,7 +306,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         initial_noise_scale = 1.0 + noise_overdose
         initial_bias_level = min(max(20.0 * initial_bias + noise_bias_level_from_intensity,
                                     -10.0), 10.0)
-        noise_inversion_effective = noise_inversion_bool and abs(s1_factor - s2_factor) < 1e-6 and abs(s2_factor - s3_factor) < 1e-6
+        noise_inversion_effective = noise_inversion_bool and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
 
         sampler1 = comfy.samplers.sampler_object(stage1_sampler)
         sampler2 = comfy.samplers.sampler_object(stage2_sampler)
@@ -362,7 +365,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     sampler2, seed + 16,
                 )
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
+                skip_tensor = _noise_inverse(model, latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
                 latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
             latent_s2 = _stage_denoise(
@@ -379,7 +382,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         if sigmas3 is not None:
             latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(latent_s2["samples"], _HANDOFF_SIGMA, 696968)
+                skip_tensor = _noise_inverse(model, latent_s2["samples"], _HANDOFF_SIGMA, 696968)
                 latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
             latent_s3 = _stage_denoise(
                 model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
