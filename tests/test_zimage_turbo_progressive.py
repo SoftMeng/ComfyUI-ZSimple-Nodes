@@ -49,16 +49,20 @@ def test_get_sigma_preset_clamps_below_3_to_alpha_3():
     assert _SIGMA_PRESETS_BY_NAME["alpha_3"] == (s1, s2, s3)
 
 
-def test_latent_scaling_three_modes():
-    assert set(_LATENT_SCALING.keys()) == {"fast", "quality", "none"}
+def test_latent_scaling_four_modes():
+    assert set(_LATENT_SCALING.keys()) == {"fast", "quality", "aggressive", "none"}
     assert _LATENT_SCALING["none"] == (1.0, 1.0, 1.0)
     assert _LATENT_SCALING["fast"] == (0.25, 0.50, 1.00)
     assert _LATENT_SCALING["quality"] == (0.50, 0.75, 1.00)
+    assert _LATENT_SCALING["aggressive"] == (0.25, 0.50, 0.75)
 
 
-def test_latent_scaling_stage3_always_one():
+def test_latent_scaling_stage3_input_except_aggressive():
     for name, scales in _LATENT_SCALING.items():
-        assert scales[2] == 1.0, f"{name} stage3 must = input size (1.0), got {scales[2]}"
+        if name == "aggressive":
+            assert scales[2] == 0.75, f"{name} stage3 = 0.75 (relies on target_size post-resize)"
+        else:
+            assert scales[2] == 1.0, f"{name} stage3 must = input size (1.0)"
 
 
 def test_slice_sigmas_at_entry_below_threshold():

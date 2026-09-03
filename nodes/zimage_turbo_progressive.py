@@ -38,10 +38,12 @@ _SIGMA_PRESETS_BY_NAME = {
 }
 
 _LATENT_SCALING = {
-    # X21 latent_sample_scales: (stage0, stage1, stage2) factors; stage3 always = input size
-    "fast"   : (0.25, 0.50, 1.00),
-    "quality": (0.50, 0.75, 1.00),
-    "none"   : (1.00, 1.00, 1.00),
+    # X21 latent_sample_scales: (stage0, stage1, stage2) factors
+    # stage3 always forced back to input via target_size post-resize
+    "fast"      : (0.25, 0.50, 1.00),  # speed: stage1/2 shrink, stage3=input
+    "quality"   : (0.50, 0.75, 1.00),  # default: mid-shrink, stage3=input
+    "aggressive": (0.25, 0.50, 0.75),  # shrink all stages, target_size back to input
+    "none"      : (1.00, 1.00, 1.00),  # full size, no resize
 }
 
 _REFINE_ENTER_SIGMA = 0.658
@@ -250,7 +252,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
                                 tooltip="Noise bias offset. Internally clamps 20*initial_bias + intensity*4-1 to ±10. For single-knob control, keep `initial_bias=0` and use `intensity` instead. Non-zero values trigger a 64x64 noise probe."),
                 io.Combo.Input("latent_scaling", options=list(_LATENT_SCALING.keys()), default="fast",
-                                tooltip="Stage size chain (stage3 always = input). fast=(0.25, 0.50, 1.00) quality=(0.50, 0.75, 1.00) none=(1.00, 1.00, 1.00)."),
+                                tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
                 io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
