@@ -199,10 +199,11 @@ def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int
     rather than a perfectly clean image (DemoFusion arXiv 2311.16973 §3.3).
     """
     model_sampling = model.get_model_object("model_sampling")
-    x_inv = model_sampling.inverse_noise_scaling(sigma_target, x0)
+    sigma_tensor = torch.tensor(sigma_target, dtype=x0.dtype, device=x0.device)
+    x_inv = model_sampling.inverse_noise_scaling(sigma_tensor, x0)
     noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
                         generator=torch.Generator(device=x0.device).manual_seed(noise_seed))
-    return model_sampling.noise_scaling(sigma_target, noise, x_inv, max_denoise=False)
+    return model_sampling.noise_scaling(sigma_tensor, noise, x_inv, max_denoise=False)
 
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
