@@ -241,20 +241,20 @@ class ZImageTurboProgressive(io.ComfyNode):
                              tooltip="Seed for stage1. Stage2/3 use deterministic offsets (seed+16, 696969)."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
                                 tooltip="Add initial noise at stage1. Disable for inpainting."),
-                io.Combo.Input("return_leftover_noise", options=["disable", "enable"], default="disable",
-                                tooltip="Stage3 leaves residual sigma noise in the output latent for downstream nodes."),
+                io.Combo.Input("return_leftover_noise", options=["enable", "disable"], default="disable",
+                                tooltip="Stage3 leaves residual σ noise in the output latent so downstream sampler nodes can continue from a partially-denoised state."),
                 io.Int.Input("steps", default=8, min=2, max=64,
-                             tooltip="Total denoise steps. 8 selects bravo_8; 3-7 selects alpha_N; >8 clamps to alpha_8."),
+                             tooltip="Total denoise steps. 8 selects bravo_8; 3-7 selects alpha_N; >8 falls back to bravo_8."),
                 io.Combo.Input("creativity_mode", options=["off", "on"], default="off",
                                 tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
                 io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,
-                                tooltip="Additive initial noise bias. Non-zero runs a small probe to compute per-channel low-frequency calibration."),
+                                tooltip="Noise bias offset. Internally clamps 20*initial_bias + intensity*4-1 to ±10. For single-knob control, keep `initial_bias=0` and use `intensity` instead. Non-zero values trigger a 64x64 noise probe."),
                 io.Combo.Input("latent_scaling", options=list(_LATENT_SCALING.keys()), default="fast",
-                                tooltip="Stage size chain. fast=(0.25,0.5,0.75) quality=(0.5,0.75,1.0) none=(1,1,1). X21 max_quality/fast/max."),
+                                tooltip="Stage size chain (stage3 always = input). fast=(0.25, 0.50, 1.00) quality=(0.50, 0.75, 1.00) none=(1.00, 1.00, 1.00)."),
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
-                                tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change."),
-                io.Combo.Input("handoff_skip", options=["on", "off"], default="on",
-                                tooltip="Stage handoff: on → noise inversion + skip residual (DemoFusion Sec 3.3). off → legacy σ-decay only."),
+                                tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
+                io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
+                                tooltip="Stage handoff noise-inversion prior between stages. on: each stage's output is inverted to σ≈0.5 and used as the next stage's starting prior (DemoFusion Sec 3.3). off: legacy σ-decay retention only."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -266,13 +266,13 @@ class ZImageTurboProgressive(io.ComfyNode):
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: str, initial_bias: float, latent_scaling: str,
-                intensity: float, handoff_skip: str,
+                intensity: float, noise_inversion: str,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
-        handoff_bool = handoff_skip == "on"
+        noise_inversion_bool = noise_inversion == "on"
         negative = positive or [] if cfg > 0 else []
         cond = positive or []
 
@@ -355,7 +355,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     model, latent_s2_in, cfg, preproc_n, cond,
                     sampler2, seed + 16,
                 )
-            if handoff_bool:
+            if noise_inversion_bool:
                 skip_tensor = _noise_inverse(latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
                 latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
@@ -372,7 +372,7 @@ class ZImageTurboProgressive(io.ComfyNode):
 
         if sigmas3 is not None:
             latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-            if handoff_bool:
+            if noise_inversion_bool:
                 skip_tensor = _noise_inverse(latent_s2["samples"], _HANDOFF_SIGMA, 696968)
                 latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
             latent_s3 = _stage_denoise(

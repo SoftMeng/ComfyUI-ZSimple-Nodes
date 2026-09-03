@@ -129,7 +129,7 @@ def test_define_schema_field_names():
         "cfg", "seed",
         "add_noise", "return_leftover_noise",
         "steps", "creativity_mode", "initial_bias",
-        "latent_scaling", "intensity", "handoff_skip",
+        "latent_scaling", "intensity", "noise_inversion",
         "stage1_sampler", "stage2_sampler", "stage3_sampler",
     }
     missing = expected - names
