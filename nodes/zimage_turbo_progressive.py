@@ -46,6 +46,8 @@ _LATENT_SCALING = {
 
 _REFINE_ENTER_SIGMA = 0.658
 
+_HANDOFF_SIGMA = 0.5
+
 
 def _get_sigma_preset(steps: int):
     clamped = max(3, min(steps, 7))
@@ -183,6 +185,18 @@ def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
     return bias, scale
 
 
+def _noise_inverse(x0: torch.Tensor, sigma_target: float, noise_seed: int) -> torch.Tensor:
+    """DemoFusion-style noise inversion: σ·n + (1-σ)·x0.
+
+    Converts a fully-denoised latent into an intermediate-σ state so the
+    next stage's UNet can read it as a partially-denoised prior rather
+    than a perfectly clean image (which kills the σ-≤-0.65 retention window).
+    """
+    noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
+                        generator=torch.Generator(device=x0.device).manual_seed(noise_seed))
+    return sigma_target * noise + (1.0 - sigma_target) * x0
+
+
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
                    add_noise=True, force_final_denoise=False):
@@ -239,6 +253,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage size chain. fast=(0.25,0.5,0.75) quality=(0.5,0.75,1.0) none=(1,1,1). X21 max_quality/fast/max."),
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change."),
+                io.Combo.Input("handoff_skip", options=["on", "off"], default="on",
+                                tooltip="Stage handoff: on → noise inversion + skip residual (DemoFusion Sec 3.3). off → legacy σ-decay only."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -250,12 +266,13 @@ class ZImageTurboProgressive(io.ComfyNode):
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: str, initial_bias: float, latent_scaling: str,
-                intensity: float,
+                intensity: float, handoff_skip: str,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
+        handoff_bool = handoff_skip == "on"
         negative = positive or [] if cfg > 0 else []
         cond = positive or []
 
@@ -338,6 +355,9 @@ class ZImageTurboProgressive(io.ComfyNode):
                     model, latent_s2_in, cfg, preproc_n, cond,
                     sampler2, seed + 16,
                 )
+            if handoff_bool:
+                skip_tensor = _noise_inverse(latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
+                latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
             latent_s2 = _stage_denoise(
                 model, latent_s2_in, cond, negative, cfg, sampler2, sigmas2,
@@ -352,6 +372,9 @@ class ZImageTurboProgressive(io.ComfyNode):
 
         if sigmas3 is not None:
             latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+            if handoff_bool:
+                skip_tensor = _noise_inverse(latent_s2["samples"], _HANDOFF_SIGMA, 696968)
+                latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
             latent_s3 = _stage_denoise(
                 model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
                 noise_seed=696969,

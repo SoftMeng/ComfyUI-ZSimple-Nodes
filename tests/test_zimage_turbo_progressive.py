@@ -8,6 +8,7 @@ from nodes.zimage_turbo_progressive import (
     _scramble_counts,
     _get_sigma_preset,
     _generate_noise,
+    _noise_inverse,
     _slice_sigmas_at_entry,
     _LATENT_SCALING,
     adjust_latent_size,
@@ -113,7 +114,7 @@ def test_adjust_latent_size_target_size_forces_resize():
 
 def test_define_schema_inputs_count():
     schema = ZImageTurboProgressive.define_schema()
-    assert len(schema.inputs) == 15
+    assert len(schema.inputs) == 16
 
 
 def test_define_schema_field_names():
@@ -128,7 +129,7 @@ def test_define_schema_field_names():
         "cfg", "seed",
         "add_noise", "return_leftover_noise",
         "steps", "creativity_mode", "initial_bias",
-        "latent_scaling", "intensity",
+        "latent_scaling", "intensity", "handoff_skip",
         "stage1_sampler", "stage2_sampler", "stage3_sampler",
     }
     missing = expected - names
@@ -172,3 +173,26 @@ def test_generate_noise_4d_bias_adds_correctly():
     )
     assert out.shape == (1, 4, 8, 8)
     assert torch.allclose(out.mean(dim=(2, 3), keepdim=True), torch.full((1, 4, 1, 1), 0.5), atol=0.05)
+
+
+def test_noise_inverse_half_blends_x0_and_noise():
+    import torch
+    x0 = torch.ones(1, 4, 8, 8)
+    out = _noise_inverse(x0, sigma_target=0.5, noise_seed=0)
+    assert out.shape == x0.shape
+    assert torch.allclose(out.mean(), torch.tensor(1.0), atol=0.05)
+
+
+def test_noise_inverse_zero_returns_x0():
+    import torch
+    x0 = torch.full((1, 4, 4, 4), 0.3)
+    out = _noise_inverse(x0, sigma_target=0.0, noise_seed=0)
+    assert torch.allclose(out, x0)
+
+
+def test_noise_inverse_one_returns_pure_noise():
+    import torch
+    x0 = torch.zeros(1, 4, 4, 4)
+    out = _noise_inverse(x0, sigma_target=1.0, noise_seed=42)
+    assert out.shape == x0.shape
+    assert out.std() > 0.5
