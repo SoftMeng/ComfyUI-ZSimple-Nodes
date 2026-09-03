@@ -187,13 +187,87 @@ def test_generate_noise_4d_bias_adds_correctly():
     assert torch.allclose(out.mean(dim=(2, 3), keepdim=True), torch.full((1, 4, 1, 1), 0.5), atol=0.05)
 
 
-def test_noise_inverse_zero_returns_x0_legacy():
-    """Legacy: _noise_inverse now takes model arg; v-prediction formula is
-    replaced by model.inverse_noise_scaling + noise_scaling. Kept as marker
-    of old behavior; called with placeholder mock to keep import-clean."""
-    pass
+def test_noise_inverse_zero_returns_x0():
+    """σ=0 → output equals x0 (no noise added)."""
+    import torch
+    torch.manual_seed(0)
+    x0 = torch.randn(1, 4, 8, 8)
+    out = _noise_inverse(None, x0, sigma_target=0.0, noise_seed=42)
+    assert out.shape == x0.shape
+    assert out.dtype == x0.dtype
+    assert torch.allclose(out, x0, atol=1e-6)
 
 
-def test_noise_inverse_one_returns_pure_noise_legacy():
-    """Legacy marker — see test_noise_inverse_zero_returns_x0_legacy."""
-    pass
+def test_noise_inverse_one_returns_pure_noise():
+    """σ=1 → output equals pure noise, x0 contribution vanishes."""
+    import torch
+    torch.manual_seed(42)
+    x0 = torch.randn(1, 4, 8, 8)
+    out = _noise_inverse(None, x0, sigma_target=1.0, noise_seed=7)
+    # Reconstruct the noise the function should have used.
+    noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
+                        generator=torch.Generator(device=x0.device).manual_seed(7))
+    assert torch.allclose(out, noise, atol=1e-6)
+
+
+def test_noise_inverse_uses_flow_convex_combination():
+    """σ=0.5 → output equals (1-σ)*x0 + σ*noise (rectified-flow trajectory).
+
+    Regression: previous implementation routed through
+    model_sampling.inverse_noise_scaling + noise_scaling, which for CONST
+    (Z-Image's ModelSamplingDiscreteFlow) evaluated to `x0 + σ*noise`,
+    breaking the convex-combination semantics and producing blurry output.
+    """
+    import torch
+    torch.manual_seed(0)
+    x0 = torch.randn(1, 4, 8, 8)
+    sigma = 0.5
+    out = _noise_inverse(None, x0, sigma_target=sigma, noise_seed=123)
+    noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
+                        generator=torch.Generator(device=x0.device).manual_seed(123))
+    expected = (1.0 - sigma) * x0 + sigma * noise
+    assert torch.allclose(out, expected, atol=1e-6)
+    broken = x0 + sigma * noise
+    assert not torch.allclose(out, broken, atol=1e-3), (
+        "output matches the broken x0 + σ*noise formula; the fix did not take"
+    )
+
+
+def test_noise_inverse_seed_determinism():
+    """Same seed → same output; different seed → different output."""
+    import torch
+    x0 = torch.zeros(1, 4, 4, 4)
+    a = _noise_inverse(None, x0, sigma_target=0.5, noise_seed=1)
+    b = _noise_inverse(None, x0, sigma_target=0.5, noise_seed=1)
+    c = _noise_inverse(None, x0, sigma_target=0.5, noise_seed=2)
+    assert torch.allclose(a, b)
+    assert not torch.allclose(a, c)
+
+
+def test_noise_inverse_shape_contract():
+    """Output shape must equal input shape. Callers are responsible for
+    pre-sizing x0 to the receiving stage's latent dims; passing a mismatched
+    size produces blurred artifacts downstream."""
+    import torch
+    for shape in [(1, 4, 8, 8), (1, 4, 16, 32), (1, 4, 64, 64), (1, 4, 128, 256)]:
+        x0 = torch.randn(*shape)
+        out = _noise_inverse(None, x0, sigma_target=0.5, noise_seed=0)
+        assert out.shape == shape, f"shape contract violated: in={shape} out={tuple(out.shape)}"
+
+
+def test_noise_inverse_preserves_stage_size_chain():
+    """Regression: handoff tensor must arrive at the next stage with that
+    stage's size. Simulate the fast-mode chain: stage1 (H/4) -> handoff at
+    stage2 size (H/2). A bug where handoff kept stage1's size would let
+    stage2's model see a mismatched latent — the prior source of 'blur'."""
+    import torch
+    H, W = 32, 32
+    stage1 = torch.randn(1, 4, H // 4, W // 4)
+    stage2_target_size = (H // 2, W // 2)
+    s2_sized = adjust_latent_size({"samples": stage1}, target_size=stage2_target_size)["samples"]
+    assert s2_sized.shape == (1, 4, H // 2, W // 2)
+    handoff = _noise_inverse(None, s2_sized, sigma_target=0.935, noise_seed=0)
+    assert handoff.shape == s2_sized.shape, (
+        f"handoff must carry stage2 size {(1, 4, H // 2, W // 2)}; "
+        f"got {tuple(handoff.shape)} — model would receive a mismatched latent"
+    )

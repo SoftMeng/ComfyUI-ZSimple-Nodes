@@ -50,8 +50,6 @@ _LATENT_SCALING = {
 
 _REFINE_ENTER_SIGMA = 0.658
 
-_HANDOFF_SIGMA = 0.5
-
 
 def _get_sigma_preset(steps: int):
     if 3 <= steps <= 10:
@@ -191,19 +189,10 @@ def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
 
 
 def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int) -> torch.Tensor:
-    """DemoFusion-style noise inversion using model.inverse_noise_scaling.
-
-    Inverse the stage output via the model's inverse_noise_scaling (preserves
-    distribution under the model's noise schedule) and re-apply noise at
-    sigma_target so the next stage's UNet reads a partially-denoised prior
-    rather than a perfectly clean image (DemoFusion arXiv 2311.16973 §3.3).
-    """
-    model_sampling = model.get_model_object("model_sampling")
-    sigma_tensor = torch.tensor(sigma_target, dtype=x0.dtype, device=x0.device)
-    x_inv = model_sampling.inverse_noise_scaling(sigma_tensor, x0)
+    """Rectified-flow handoff noising: (1-σ)*x0 + σ*noise."""
     noise = torch.randn(x0.shape, dtype=x0.dtype, device=x0.device,
                         generator=torch.Generator(device=x0.device).manual_seed(noise_seed))
-    return model_sampling.noise_scaling(sigma_tensor, noise, x_inv, max_denoise=False)
+    return (1.0 - sigma_target) * x0 + sigma_target * noise
 
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
@@ -263,7 +252,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
                 io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
-                                tooltip="Stage handoff: invert each stage's output to σ≈0.5 as next stage's starting prior (DemoFusion arXiv 2311.16973 §3.3). Auto-effective for size-changing modes (fast/quality/aggressive) where resize chains break the σ-decay retention window. Skipped on none mode (all sizes equal) where the σ-decay window is naturally preserved. Implementation uses model.inverse_noise_scaling + noise_scaling for proper distribution-preserving handoff."),
+                                tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -366,7 +355,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                     sampler2, seed + 16,
                 )
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(model, latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
+                s2_input = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+                skip_tensor = _noise_inverse(model, s2_input["samples"], 0.0, seed + 8)
                 latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
             latent_s2 = _stage_denoise(
@@ -383,7 +373,8 @@ class ZImageTurboProgressive(io.ComfyNode):
         if sigmas3 is not None:
             latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(model, latent_s2["samples"], _HANDOFF_SIGMA, 696968)
+                s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+                skip_tensor = _noise_inverse(model, s3_input["samples"], 0.0, 696968)
                 latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
             latent_s3 = _stage_denoise(
                 model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
