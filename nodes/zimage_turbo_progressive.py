@@ -34,7 +34,7 @@ _SIGMA_PRESETS_BY_NAME = {
     "alpha_5" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.620, 0.000)],
     "alpha_6" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.658, 0.302, 0.000)],
     "alpha_7" : [(0.991, 0.980, 0.920), (0.935, 0.892, 0.760, 0.000), (0.658, 0.302, 0.000)],
-    "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
     "alpha_9" : [(0.991, 0.980, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
     "alpha_10" : [(0.991, 0.980, 0.920, 0.875, 0.820, 0.780, 0.760), (0.750, 0.620, 0.000), (0.658, 0.302, 0.000)],
 }
@@ -56,7 +56,7 @@ _HANDOFF_SIGMA = 0.5
 def _get_sigma_preset(steps: int):
     if 3 <= steps <= 10:
         return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
-    return _SIGMA_PRESETS_BY_NAME["bravo_8"]
+    return _SIGMA_PRESETS_BY_NAME["alpha_8"]
 
 
 def _slice_sigmas_at_entry(sigmas, enter_sigma: float):
@@ -252,7 +252,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Combo.Input("return_leftover_noise", options=["enable", "disable"], default="disable",
                                 tooltip="Stage3 leaves residual σ noise in the output latent so downstream sampler nodes can continue from a partially-denoised state."),
                 io.Int.Input("steps", default=8, min=2, max=64,
-                             tooltip="Total denoise steps. 8 selects bravo_8; 3-10 selects alpha_N (alpha_9/10 are user-extended); >10 falls back to bravo_8."),
+                             tooltip="Total denoise steps. 8 selects alpha_8; 3-10 selects alpha_N (alpha_9/10 are user-extended); >10 falls back to alpha_8."),
                 io.Combo.Input("creativity_mode", options=["off", "on"], default="off",
                                 tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
                 io.Float.Input("initial_bias", default=0.0, min=-0.5, max=0.5, step=0.1,

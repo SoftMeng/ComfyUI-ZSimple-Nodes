@@ -22,7 +22,7 @@ def test_get_sigma_preset_steps_8_is_bravo():
     assert s1 is not None and len(s1) >= 2
     assert s2 is not None and len(s2) >= 2
     assert s3 is not None and len(s3) >= 2
-    assert _SIGMA_PRESETS_BY_NAME["bravo_8"] == (s1, s2, s3)
+    assert _SIGMA_PRESETS_BY_NAME["alpha_8"] == (s1, s2, s3)
 
 
 def test_get_sigma_preset_steps_5_is_alpha():
@@ -33,20 +33,20 @@ def test_get_sigma_preset_steps_5_is_alpha():
     assert _SIGMA_PRESETS_BY_NAME["alpha_5"] == (s1, s2, s3)
 
 
-def test_bravo_8_sigmas2_ends_at_zero():
-    s1, s2, s3 = _SIGMA_PRESETS_BY_NAME["bravo_8"]
-    assert s2[-1] == 0.0, f"bravo_8 sigmas2 must end at 0 (full denoise), got {s2[-1]}"
+def test_alpha_8_sigmas2_ends_at_zero():
+    s1, s2, s3 = _SIGMA_PRESETS_BY_NAME["alpha_8"]
+    assert s2[-1] == 0.0, f"alpha_8 sigmas2 must end at 0 (full denoise), got {s2[-1]}"
     assert s3[-1] == 0.0
 
 
 def test_get_sigma_preset_steps_over_8_falls_back_to_bravo():
     s1, s2, s3 = _get_sigma_preset(20)
-    assert _SIGMA_PRESETS_BY_NAME["bravo_8"] == (s1, s2, s3)
+    assert _SIGMA_PRESETS_BY_NAME["alpha_8"] == (s1, s2, s3)
 
 
 def test_get_sigma_preset_clamps_below_3_to_bravo():
     s1, s2, s3 = _get_sigma_preset(2)
-    assert _SIGMA_PRESETS_BY_NAME["bravo_8"] == (s1, s2, s3)
+    assert _SIGMA_PRESETS_BY_NAME["alpha_8"] == (s1, s2, s3)
 
 
 def test_get_sigma_preset_alpha_9_and_alpha_10():
