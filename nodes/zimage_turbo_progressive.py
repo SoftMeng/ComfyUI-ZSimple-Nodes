@@ -35,6 +35,7 @@ _SIGMA_PRESETS_BY_NAME = {
     "alpha_6" : [(0.991, 0.980, 0.920), (0.942, 0.780, 0.000), (0.658, 0.302, 0.000)],
     "alpha_7" : [(0.991, 0.980, 0.920), (0.935, 0.892, 0.760, 0.000), (0.658, 0.302, 0.000)],
     "bravo_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_9" : [(0.991, 0.980, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
 }
 
 _LATENT_SCALING = {
@@ -42,7 +43,7 @@ _LATENT_SCALING = {
     # stage3 always forced back to input via target_size post-resize
     "fast"      : (0.25, 0.50, 1.00),  # speed: stage1/2 shrink, stage3=input
     "quality"   : (0.50, 0.75, 1.00),  # default: mid-shrink, stage3=input
-    "aggressive": (0.25, 0.50, 0.75),  # shrink all stages, target_size back to input
+    "aggressive": (0.75, 0.75, 1.00),  # shrink all stages, target_size back to input
     "none"      : (1.00, 1.00, 1.00),  # full size, no resize
 }
 
@@ -255,8 +256,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("intensity", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (intensity-1)*0.4 + bias level (intensity*4-1). 1.0 = no change. Combines with `initial_bias`; for clean control set `initial_bias=0`."),
-                io.Combo.Input("noise_inversion", options=["off", "on"], default="off",
-                                tooltip="Default off: stage handoff uses σ-decay retention only. on: invert each stage's output to σ≈0.5 as the next stage's starting prior (DemoFusion Sec 3.3) — empirically causes artifacts in fast档 (chain factor 64×64 → 128×128 distribution mismatch)."),
+                io.Combo.Input("noise_inversion", options=["off", "on"], default="on",
+                                tooltip="Stage handoff: invert each stage's output to σ≈0.5 as next stage's starting prior (DemoFusion Sec 3.3). Auto-effective only when adjacent stage sizes are equal (latent_scaling=none); for size-changing modes (fast/quality/aggressive) the legacy σ-decay retention is used because noise inversion at small stages (64×64) cascades artifacts when upsampled."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -300,6 +301,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         initial_noise_scale = 1.0 + noise_overdose
         initial_bias_level = min(max(20.0 * initial_bias + noise_bias_level_from_intensity,
                                     -10.0), 10.0)
+        noise_inversion_effective = noise_inversion_bool and abs(s1_factor - s2_factor) < 1e-6 and abs(s2_factor - s3_factor) < 1e-6
 
         sampler1 = comfy.samplers.sampler_object(stage1_sampler)
         sampler2 = comfy.samplers.sampler_object(stage2_sampler)
@@ -357,7 +359,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                     model, latent_s2_in, cfg, preproc_n, cond,
                     sampler2, seed + 16,
                 )
-            if noise_inversion_bool:
+            if noise_inversion_effective:
                 skip_tensor = _noise_inverse(latent_s1["samples"], _HANDOFF_SIGMA, seed + 8)
                 latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
@@ -374,7 +376,7 @@ class ZImageTurboProgressive(io.ComfyNode):
 
         if sigmas3 is not None:
             latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-            if noise_inversion_bool:
+            if noise_inversion_effective:
                 skip_tensor = _noise_inverse(latent_s2["samples"], _HANDOFF_SIGMA, 696968)
                 latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
             latent_s3 = _stage_denoise(

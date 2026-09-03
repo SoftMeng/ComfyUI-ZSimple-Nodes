@@ -54,13 +54,14 @@ def test_latent_scaling_four_modes():
     assert _LATENT_SCALING["none"] == (1.0, 1.0, 1.0)
     assert _LATENT_SCALING["fast"] == (0.25, 0.50, 1.00)
     assert _LATENT_SCALING["quality"] == (0.50, 0.75, 1.00)
-    assert _LATENT_SCALING["aggressive"] == (0.25, 0.50, 0.75)
+    assert _LATENT_SCALING["aggressive"] == (0.75, 0.75, 1.00)
 
 
 def test_latent_scaling_stage3_input_except_aggressive():
     for name, scales in _LATENT_SCALING.items():
         if name == "aggressive":
-            assert scales[2] == 0.75, f"{name} stage3 = 0.75 (relies on target_size post-resize)"
+            assert scales[2] == 1.00, f"{name} stage3 = input size (1.00)"
+            assert scales[1] != 1.00, f"{name} stage2 != 1.00 (shrink from stage1)"
         else:
             assert scales[2] == 1.0, f"{name} stage3 must = input size (1.0)"
 
