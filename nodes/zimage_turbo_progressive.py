@@ -281,6 +281,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
                 io.Boolean.Input("noise_inversion", default=True,
                                 tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
+                io.Int.Input("stage3_count", default=1, min=1, max=4,
+                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). latent_stage3 becomes a list of N."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -291,9 +293,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Latent.Output("latent_stage2",
                                   tooltip="Stage 2 clean latent. Force-final-denoised to σ=0. Ready for downstream sampler or VAE Decode."),
                 io.Latent.Output("latent_stage3",
-                                  tooltip="Stage 3 output. Clean (σ=0) when return_leftover_noise=disable; otherwise retains residual σ noise for downstream continuation."),
+                                  tooltip="List of N latents (N=stage3_count). Each entry uses seed+696968+i. Clean (σ=0) when return_leftover_noise=disable; otherwise retains residual σ noise."),
             ],
-        )
         )
 
     @classmethod
@@ -301,7 +302,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: bool, noise_bias_offset: float, stage_resolution_chain: str,
                 noise_strength: float, noise_inversion: bool,
-                stage1_sampler: str, stage2_sampler: str, stage3_sampler: str,
+                stage1_sampler: str, stage2_sampler: str, stage3_sampler: str, stage3_count: int = 1,
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
@@ -407,21 +408,28 @@ class ZImageTurboProgressive(io.ComfyNode):
             latent_s2 = latent_s1
 
         if sigmas3 is not None:
-            latent_s3_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-            if noise_inversion_effective:
+            latent_s3_base_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+            latent_s3_list: list[dict] = []
+            for i in range(stage3_count):
                 s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-                skip_tensor = _noise_inverse(model, s3_input["samples"], 0.0, 696968)
-                latent_s3_in = {**latent_s3_in, "samples": skip_tensor}
-            latent_s3 = _stage_denoise(
-                model, latent_s3_in, cond, negative, cfg, sampler3, sigmas3,
-                noise_seed=696969,
-                noise_scale=probe_noise_scale,
-                noise_bias=probe_noise_bias,
-                add_noise=True,
-                force_final_denoise=not return_noise_bool,
-            )
-            latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
+                skip_tensor = (
+                    _noise_inverse(model, s3_input["samples"], 0.0, 696968 + i)
+                    if noise_inversion_effective
+                    else None
+                )
+                s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
+                latent_s3 = _stage_denoise(
+                    model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
+                    noise_seed=696969 + i,
+                    noise_scale=probe_noise_scale,
+                    noise_bias=probe_noise_bias,
+                    add_noise=True,
+                    force_final_denoise=not return_noise_bool,
+                )
+                latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
+                latent_s3_list.append(latent_s3)
+            latent_s3_out = latent_s3_list
         else:
-            latent_s3 = latent_s2
+            latent_s3_out = [latent_s2]
 
-        return io.NodeOutput(latent_s1, latent_s2, latent_s3)
+        return io.NodeOutput(latent_s1, latent_s2, latent_s3_out)
