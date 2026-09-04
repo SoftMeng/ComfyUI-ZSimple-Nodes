@@ -107,6 +107,13 @@ _LATENT_SCALING = {
 
 _REFINE_ENTER_SIGMA = 0.658
 
+_STAGE3_CHAIN_SIGMAS = (
+    (0.800, 0.366, 0.000),
+    (0.550, 0.252, 0.000),
+    (0.300, 0.137, 0.000),
+    (0.100, 0.046, 0.000),
+)
+
 
 def _slice_sigmas_at_entry(sigmas, enter_sigma: float):
     if sigmas is None or sigmas.numel() == 0:
@@ -364,6 +371,43 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
     return out
 
 
+def _stage3_chain_step(model, x0_latent, sigmas, cond, negative, cfg, sampler3,
+                        noise_seed, probe_noise_scale, probe_noise_bias,
+                        handoff_mode, last_eps, handoff_sigma_s3, target_h, target_w):
+    s3_input = adjust_latent_size(x0_latent, factor=1.0)
+    noise_inversion_effective = handoff_mode != "off" and (abs(s3_input["samples"].shape[-2] - target_h) > 1e-6 or abs(s3_input["samples"].shape[-1] - target_w) > 1e-6)
+    handoff_use_locked = handoff_mode == "locked"
+    if noise_inversion_effective:
+        if handoff_use_locked and last_eps is not None:
+            target_shape_s3 = (s3_input["samples"].shape[0],
+                                s3_input["samples"].shape[1],
+                                s3_input["samples"].shape[2],
+                                s3_input["samples"].shape[3])
+            skip_tensor = _locked_noise_from_prev(last_eps, target_shape_s3, noise_seed)
+        else:
+            skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, noise_seed)
+        if handoff_use_locked:
+            eps_external = skip_tensor
+            s3_iter_in = x0_latent
+        else:
+            s3_iter_in = {**s3_input, "samples": skip_tensor}
+            eps_external = None
+    else:
+        s3_iter_in = s3_input
+        eps_external = None
+    out = _stage_denoise(
+        model, s3_iter_in, cond, negative, cfg, sampler3, sigmas,
+        noise_seed=noise_seed,
+        noise_scale=probe_noise_scale,
+        noise_bias=probe_noise_bias,
+        add_noise=True,
+        force_final_denoise=True,
+        eps_external=eps_external,
+        last_stage_eps=True,
+    )
+    return adjust_latent_size(out, target_size=(target_h, target_w))
+
+
 class ZImageTurboProgressive(io.ComfyNode):
 
     @classmethod
@@ -401,7 +445,11 @@ class ZImageTurboProgressive(io.ComfyNode):
                                          "legacy (default): _noise_inverse called with sigma_target=0, returns x0. Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising.\n"
                                          "locked: _noise_inverse called with stage_{i+1} first sigma; output fed to stage_{i+1} sampler as epsilon. Tighter signal continuity; experimental.")),
                 io.Int.Input("stage3_count", default=1, min=1, max=4,
-                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). Outputs latent_stage3_0..3 (unused slots = None)."),
+                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times (chain or batch per stage3_chain_mode). Outputs latent_stage3_0..3 (unused slots = None)."),
+                io.Combo.Input("stage3_chain_mode", options=["off", "chain"], default="chain",
+                                tooltip=("Stage 3 mode.\n"
+                                         "off: legacy batch — N independent candidates from stage2 latent with different noise.\n"
+                                         "chain (default): N serial refinements — slot i refines slot i-1's output latent. Sigma sequence per slot follows _STAGE3_CHAIN_SIGMAS; count>4 capped at 4.")),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -430,6 +478,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 creativity_mode: str, noise_bias_offset: float, stage_resolution_chain: str,
                 noise_strength: float,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str, stage3_count: int = 1,
+                stage3_chain_mode: str = "chain",
                 stage_handoff_mode: str = "legacy",
                 positive: list | None = None) -> io.NodeOutput:
 
@@ -553,37 +602,58 @@ class ZImageTurboProgressive(io.ComfyNode):
         if sigmas3 is not None:
             latent_s3_base_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
             latent_s3_slots: list = [None] * 4
-            for i in range(stage3_count):
-                s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-                if noise_inversion_effective:
-                    if handoff_use_locked and "last_eps" in latent_s2:
-                        target_shape_s3 = (s3_input["samples"].shape[0],
-                                            s3_input["samples"].shape[1],
-                                            s3_input["samples"].shape[2],
-                                            s3_input["samples"].shape[3])
-                        skip_tensor = _locked_noise_from_prev(latent_s2["last_eps"], target_shape_s3, 696968 + i)
+            if stage3_chain_mode == "chain":
+                current_x0 = latent_s3_base_in
+                chain_last_eps = latent_s2.get("last_eps") if isinstance(latent_s2, dict) else None
+                for i in range(stage3_count):
+                    chain_sigmas = _to_tensor(_STAGE3_CHAIN_SIGMAS[min(i, 3)])
+                    chain_seed = 696968 + i
+                    out = _stage3_chain_step(
+                        model, current_x0, chain_sigmas, cond, negative, cfg, sampler3,
+                        noise_seed=chain_seed,
+                        probe_noise_scale=probe_noise_scale,
+                        probe_noise_bias=probe_noise_bias,
+                        handoff_mode=stage_handoff_mode,
+                        last_eps=chain_last_eps,
+                        handoff_sigma_s3=handoff_sigma_s3,
+                        target_h=target_h, target_w=target_w,
+                    )
+                    latent_s3_slots[i] = out
+                    current_x0 = out
+                    if isinstance(out, dict) and "last_eps" in out:
+                        chain_last_eps = out["last_eps"]
+            else:
+                for i in range(stage3_count):
+                    s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+                    if noise_inversion_effective:
+                        if handoff_use_locked and "last_eps" in latent_s2:
+                            target_shape_s3 = (s3_input["samples"].shape[0],
+                                                s3_input["samples"].shape[1],
+                                                s3_input["samples"].shape[2],
+                                                s3_input["samples"].shape[3])
+                            skip_tensor = _locked_noise_from_prev(latent_s2["last_eps"], target_shape_s3, 696968 + i)
+                        else:
+                            skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, 696968 + i)
                     else:
-                        skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, 696968 + i)
-                else:
-                    skip_tensor = None
-                if handoff_use_locked:
-                    pass
-                else:
-                    s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
-                s3_iter_in = latent_s3_base_in if handoff_use_locked else ({**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in)
-                eps_external_s3 = skip_tensor if (handoff_use_locked and skip_tensor is not None) else None
-                latent_s3 = _stage_denoise(
-                    model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
-                    noise_seed=696969 + i,
-                    noise_scale=probe_noise_scale,
-                    noise_bias=probe_noise_bias,
-                    add_noise=True,
-                    force_final_denoise=not return_noise_bool,
-                    eps_external=eps_external_s3,
-                    last_stage_eps=False,
-                )
-                latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
-                latent_s3_slots[i] = latent_s3
+                        skip_tensor = None
+                    if handoff_use_locked:
+                        pass
+                    else:
+                        s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
+                    s3_iter_in = latent_s3_base_in if handoff_use_locked else ({**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in)
+                    eps_external_s3 = skip_tensor if (handoff_use_locked and skip_tensor is not None) else None
+                    latent_s3 = _stage_denoise(
+                        model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
+                        noise_seed=696969 + i,
+                        noise_scale=probe_noise_scale,
+                        noise_bias=probe_noise_bias,
+                        add_noise=True,
+                        force_final_denoise=not return_noise_bool,
+                        eps_external=eps_external_s3,
+                        last_stage_eps=False,
+                    )
+                    latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
+                    latent_s3_slots[i] = latent_s3
             latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3 = latent_s3_slots
         else:
             latent_s3_0 = latent_s3_1 = latent_s3_2 = latent_s3_3 = None
