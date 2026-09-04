@@ -37,9 +37,20 @@ _SIGMA_PRESETS_BY_NAME = {
     "alpha_10" : [(0.991, 0.960, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
 }
 
-_BASE_S1 = (0.991, 0.920)
+_BASE_S1_LOW = (0.960, 0.920)
+_BASE_S1_HIGH = (0.991, 0.920)
 _BASE_S2 = (0.935, 0.900, 0.875, 0.820, 0.750, 0.000)
 _BASE_S3 = (0.658, 0.4556, 0.200, 0.000)
+
+_BASE_S1_BY_MODE = {
+    "off": _BASE_S1_HIGH,
+    "lite": _BASE_S1_LOW,
+    "middle": _BASE_S1_HIGH,
+    "high": _BASE_S1_LOW,
+}
+
+_MODE_DOES_SCRAMBLE = {"middle", "high"}
+_MODE_DOES_PREPROC = {"lite", "middle", "high"}
 
 _ALPHA_INSERT_COUNTS: dict[int, tuple[int, int]] = {
     11: (1, 1),
@@ -65,22 +76,23 @@ def _refine_sigma_sequence(sigmas, insert_count: int):
     return sigmas
 
 
-def _get_sigma_preset(steps: int):
+def _get_sigma_preset(steps: int, mode: str = "middle"):
+    s1 = _BASE_S1_BY_MODE.get(mode, _BASE_S1_HIGH)
     if f"alpha_{steps}" in _SIGMA_PRESETS_BY_NAME:
         return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
     if steps in _ALPHA_INSERT_COUNTS:
         s2_inserts, s3_inserts = _ALPHA_INSERT_COUNTS[steps]
         return (
-            _BASE_S1,
+            s1,
             tuple(_refine_sigma_sequence(_BASE_S2, s2_inserts)),
             tuple(_refine_sigma_sequence(_BASE_S3, s3_inserts)),
         )
-    if 3 <= steps <= 99:
+    if 10 <= steps <= 99:
         extra = steps - 9
         n1 = int(0.4 + 0.6 * extra)
         n2 = extra - n1
         return (
-            _BASE_S1,
+            s1,
             tuple(_refine_sigma_sequence(_BASE_S2, n2)),
             tuple(_refine_sigma_sequence(_BASE_S3, n1)),
         )
@@ -167,8 +179,8 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     anchors = ('left', 'top', 'right', 'bottom')
     for anchor_idx, anchor in enumerate(anchors):
         for _ in range(abs(counts[anchor_idx])):
-            fh = int(H * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
-            fw = int(W * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
+            fh = int(H * (0.70 + 0.10 * torch.rand(1, generator=generator).item()))
+            fw = int(W * (0.70 + 0.10 * torch.rand(1, generator=generator).item()))
             fh = max(8, min(fh, H))
             fw = max(8, min(fw, W))
             if anchor in ('left', 'right'):
@@ -179,9 +191,9 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
                 fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
             frag = x[:, :, fy:fy + fh, fx:fx + fw].clone()
             if counts[anchor_idx] < 0:
-                if torch.rand(1, generator=generator).item() > 0.5:
+                if torch.rand(1, generator=generator).item() > 0.85:
                     frag = torch.flip(frag, dims=[-1])
-                if torch.rand(1, generator=generator).item() > 0.5:
+                if torch.rand(1, generator=generator).item() > 0.85:
                     frag = torch.flip(frag, dims=[-2])
             frag_resized = F.interpolate(frag, size=(H, W), mode='bicubic', align_corners=False)
             result = result + frag_resized
@@ -292,8 +304,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage3 leaves residual σ noise in the output latent so downstream sampler nodes can continue from a partially-denoised state."),
                 io.Int.Input("steps", default=8, min=2, max=64,
                              tooltip="Total denoise steps. 8 selects alpha_8; 3-15 selects alpha_N; >15 falls back to alpha_8."),
-                io.Boolean.Input("creativity_mode", default=False,
-                                tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
+                io.Combo.Input("creativity_mode", options=["off", "lite", "middle", "high"], default="lite",
+                                tooltip="off: skip stage2 scramble + preproc (silent stage2). lite: stage1 s1 starts at 0.960, no scramble, preproc still runs. middle: original 0.991 s1 + scramble + preproc. high: 0.960 s1 + scramble + preproc."),
                 io.Float.Input("noise_bias_offset", default=0.0, min=-0.5, max=0.5, step=0.1,
                                 tooltip="Noise bias offset. Internally clamps 20*noise_bias_offset + noise_strength*4-1 to ±10. For single-knob control, keep `noise_bias_offset=0` and use `noise_strength` instead. Non-zero values trigger a 64x64 noise probe."),
                 io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="quality",
@@ -321,13 +333,15 @@ class ZImageTurboProgressive(io.ComfyNode):
                                   tooltip="Stage 3 batch slot 2 (noise_seed=696969+2). None when stage3_count<3."),
                 io.Latent.Output("latent_stage3_3",
                                   tooltip="Stage 3 batch slot 3 (noise_seed=696969+3). None when stage3_count<4."),
+                io.Latent.Output("debug_scrambled_latent",
+                                  tooltip="Debug only: latent right after scramble (creativity_mode path) or right after noise_inversion (no-creativity path), before stage2 preproc/denoise. Feed to VAE Decode to inspect. None when no stage2."),
             ],
         )
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
-                creativity_mode: bool, noise_bias_offset: float, stage_resolution_chain: str,
+                creativity_mode: str, noise_bias_offset: float, stage_resolution_chain: str,
                 noise_strength: float, noise_inversion: bool,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str, stage3_count: int = 1,
                 positive: list | None = None) -> io.NodeOutput:
@@ -339,7 +353,7 @@ class ZImageTurboProgressive(io.ComfyNode):
         cond = positive or []
 
         s1_factor, s2_factor, s3_factor = _LATENT_SCALING[stage_resolution_chain]
-        sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps)
+        sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps, creativity_mode)
 
         def _to_tensor(tup):
             if not tup:
@@ -373,8 +387,9 @@ class ZImageTurboProgressive(io.ComfyNode):
         target_h, target_w = latent_input["samples"].shape[-2:]
 
 
-        creativity_on = creativity_mode
+        creativity_on = creativity_mode in _MODE_DOES_PREPROC
         high_as_a_kite = (seed % 3) == 0
+        do_scramble = creativity_mode in _MODE_DOES_SCRAMBLE
         preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
 
         probe_noise_bias = torch.zeros(0, device=model.load_device)
@@ -407,10 +422,11 @@ class ZImageTurboProgressive(io.ComfyNode):
             if noise_inversion_effective:
                 skip_tensor = _noise_inverse(model, latent_s2_in["samples"], 0.0, seed + 8)
                 latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
-            if creativity_on:
+            if do_scramble:
                 t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_s2_in = {**latent_s2_in, "samples": t}
+            debug_scrambled_latent = {"samples": latent_s2_in["samples"].clone()}
             if preproc_n > 0:
                 latent_s2_in = _stage2_preproc(
                     model, latent_s2_in, cfg, preproc_n, cond,
@@ -452,5 +468,6 @@ class ZImageTurboProgressive(io.ComfyNode):
             latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3 = latent_s3_slots
         else:
             latent_s3_0 = latent_s3_1 = latent_s3_2 = latent_s3_3 = None
+            debug_scrambled_latent = None
 
-        return io.NodeOutput(latent_s1, latent_s2, latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3)
+        return io.NodeOutput(latent_s1, latent_s2, latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3, debug_scrambled_latent)
