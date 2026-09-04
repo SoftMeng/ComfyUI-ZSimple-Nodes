@@ -395,7 +395,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("noise_strength", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
-                io.Combo.Input("stage_handoff_mode", options=["off", "legacy", "locked"], default="off",
+                io.Combo.Input("stage_handoff_mode", options=["off", "legacy", "locked"], default="legacy",
                                 tooltip=("Stage-to-stage handoff mode.\n"
                                          "off: skip _noise_inverse entirely; each stage samples fresh noise.\n"
                                          "legacy (default): _noise_inverse called with sigma_target=0, returns x0. Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising.\n"
