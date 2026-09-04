@@ -80,7 +80,7 @@ def _get_sigma_preset(steps: int):
 _LATENT_SCALING = {
     "fast"      : (0.25, 0.50, 1.00),
     "quality"   : (0.50, 0.75, 1.00),
-    "aggressive": (0.5, 0.5, 1.00),
+    "aggressive": (0.75, 0.75, 1.00),
     "none"      : (1.00, 1.00, 1.00),
 }
 
@@ -188,9 +188,11 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
     if preproc_steps <= 0:
         return latent
     latents = latent["samples"]
+    latents = _inject_low_freq_noise(latents, noise_seed, freq=1024, scale=0.8)
+    latent = {**latent, "samples": latents}
     sigmas = torch.tensor((0.949, 0.0), dtype=latents.dtype, device=latents.device)
     out_dict = _stage_denoise(
-        model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
+        model, latent, preproc_positive, preproc_positive, cfg,
         sampler, sigmas,
         noise_seed=noise_seed,
         noise_scale=1.0, noise_bias=0.0,
@@ -198,6 +200,16 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
         force_final_denoise=True,
     )
     return {"samples": out_dict["samples"]}
+
+
+def _inject_low_freq_noise(x, seed, freq=1024, scale=0.8):
+    h, w = x.shape[-2:]
+    if scale <= 0.0 or freq < (1024 / h) or freq < (1024 / w):
+        return x
+    low_res_shape = (*x.shape[:-2], (h * freq) // 1024, (w * freq) // 1024)
+    g = torch.Generator().manual_seed(seed + 1)
+    noise = torch.randn(low_res_shape, dtype=x.dtype, layout=x.layout, generator=g, device=x.device)
+    return x + F.interpolate(noise, size=(h, w), mode="bilinear", align_corners=False) * scale
 
 
 def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
@@ -262,7 +274,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Model.Input("model"),
                 io.Conditioning.Input("positive"),
                 io.Float.Input("cfg", default=1.0, min=0.0, max=15.0, step=0.1,
-                                tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0 (positive == negative)."),
+                                tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0."),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
                              tooltip="Seed for stage1. Stage2/3 use deterministic offsets (seed+16, 696969)."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
@@ -369,11 +381,6 @@ class ZImageTurboProgressive(io.ComfyNode):
             )
             probe_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
             probe_noise_bias = probe_noise_bias * initial_bias_level
-
-        if add_noise_bool and creativity_on:
-            t = latent_input["samples"]
-            t = _scramble_tensor(t, _scramble_counts(seed), seed)
-            latent_input = {**latent_input, "samples": t}
 
         latent_s1_in = adjust_latent_size(latent_input, factor=s1_factor)
 
