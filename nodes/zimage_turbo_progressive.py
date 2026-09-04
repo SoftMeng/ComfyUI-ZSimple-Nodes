@@ -33,7 +33,8 @@ _SIGMA_PRESETS_BY_NAME = {
     "alpha_6" : [(0.991, 0.920), (0.935, 0.770, 0.690, 0.000), (0.658, 0.302, 0.000)],
     "alpha_7" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.800, 0.000), (0.658, 0.302, 0.000)],
     "alpha_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
-    "alpha_9" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
+    "alpha_9" : [(0.991, 0.960, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_10" : [(0.991, 0.960, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
 }
 
 _BASE_S1 = (0.991, 0.920)
@@ -41,12 +42,11 @@ _BASE_S2 = (0.935, 0.900, 0.875, 0.820, 0.750, 0.000)
 _BASE_S3 = (0.658, 0.4556, 0.200, 0.000)
 
 _ALPHA_INSERT_COUNTS: dict[int, tuple[int, int]] = {
-    10: (1, 1),
-    11: (2, 2),
-    12: (3, 3),
-    13: (4, 4),
-    14: (5, 5),
-    15: (6, 6),
+    11: (1, 1),
+    12: (2, 2),
+    13: (3, 3),
+    14: (4, 4),
+    15: (5, 5),
 }
 
 
@@ -66,15 +66,24 @@ def _refine_sigma_sequence(sigmas, insert_count: int):
 
 
 def _get_sigma_preset(steps: int):
-    if 10 <= steps <= 15:
+    if f"alpha_{steps}" in _SIGMA_PRESETS_BY_NAME:
+        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
+    if steps in _ALPHA_INSERT_COUNTS:
         s2_inserts, s3_inserts = _ALPHA_INSERT_COUNTS[steps]
         return (
             _BASE_S1,
             tuple(_refine_sigma_sequence(_BASE_S2, s2_inserts)),
             tuple(_refine_sigma_sequence(_BASE_S3, s3_inserts)),
         )
-    if 3 <= steps <= 9:
-        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
+    if 3 <= steps <= 99:
+        extra = steps - 9
+        n1 = int(0.4 + 0.6 * extra)
+        n2 = extra - n1
+        return (
+            _BASE_S1,
+            tuple(_refine_sigma_sequence(_BASE_S2, n2)),
+            tuple(_refine_sigma_sequence(_BASE_S3, n1)),
+        )
     return _SIGMA_PRESETS_BY_NAME["alpha_8"]
 
 _LATENT_SCALING = {
