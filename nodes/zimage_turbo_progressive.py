@@ -228,9 +228,85 @@ def _inject_low_freq_noise(x, seed, freq=1024, scale=0.8):
     if scale <= 0.0 or freq < (1024 / h) or freq < (1024 / w):
         return x
     low_res_shape = (*x.shape[:-2], (h * freq) // 1024, (w * freq) // 1024)
-    g = torch.Generator().manual_seed(seed + 1)
+    g = torch.Generator(device=x.device).manual_seed(seed + 1)
     noise = torch.randn(low_res_shape, dtype=x.dtype, layout=x.layout, generator=g, device=x.device)
     return x + F.interpolate(noise, size=(h, w), mode="bilinear", align_corners=False) * scale
+
+
+# TODO thread-safety: _PARTITION_CACHE is a module-level dict; concurrent
+# ZImageTurboProgressive instances may race. Mirrors C2 (ZImageTurboProgressiveLockedUpscale).
+_PARTITION_CACHE = {}
+
+
+def _build_partition_map(low_n: int, high_n: int, device):
+    if high_n < low_n:
+        raise ValueError(f"Partition requires high_n >= low_n, got {high_n} < {low_n}")
+    key = (low_n, high_n, device.type)
+    if key in _PARTITION_CACHE:
+        return _PARTITION_CACHE[key]
+    base = high_n // low_n
+    rem = high_n % low_n
+    counts = torch.full((low_n,), base, dtype=torch.long, device=device)
+    if rem > 0:
+        counts[:rem] += 1
+    map_hi_to_lo = torch.repeat_interleave(torch.arange(low_n, device=device), counts)
+    inv_sqrt = (counts.float().rsqrt())[map_hi_to_lo]
+    _PARTITION_CACHE[key] = (map_hi_to_lo, inv_sqrt, counts)
+    return map_hi_to_lo, inv_sqrt, counts
+
+
+def _reduce_height(x, map_h, inv_sqrt_h, low_h):
+    B, C, Hh, W = x.shape
+    out = torch.zeros((B, C, low_h, W), device=x.device, dtype=x.dtype)
+    out.index_add_(2, map_h, x * inv_sqrt_h.view(1, 1, Hh, 1))
+    return out
+
+
+def _expand_height(coeff, map_h, inv_sqrt_h):
+    Hh = map_h.shape[0]
+    return coeff.index_select(2, map_h) * inv_sqrt_h.view(1, 1, Hh, 1)
+
+
+def _reduce_width(x, map_w, inv_sqrt_w, low_w):
+    B, C, H, Ww = x.shape
+    out = torch.zeros((B, C, H, low_w), device=x.device, dtype=x.dtype)
+    out.index_add_(3, map_w, x * inv_sqrt_w.view(1, 1, 1, Ww))
+    return out
+
+
+def _expand_width(coeff, map_w, inv_sqrt_w):
+    Ww = map_w.shape[0]
+    return coeff.index_select(3, map_w) * inv_sqrt_w.view(1, 1, 1, Ww)
+
+
+def _project_to_coarse_subspace(x, low_h, low_w, high_h, high_w, device):
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    tmp = _reduce_width(x, map_w, inv_w, low_w)
+    coeff = _reduce_height(tmp, map_h, inv_h, low_h)
+    return _expand_width(_expand_height(coeff, map_h, inv_h), map_w, inv_w)
+
+
+def _lift_noise(eps_prev, high_h, high_w):
+    device = eps_prev.device
+    low_h, low_w = eps_prev.shape[-2], eps_prev.shape[-1]
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    return _expand_width(_expand_height(eps_prev, map_h, inv_h), map_w, inv_w)
+
+
+def _locked_noise_from_prev(eps_prev, target_shape, seed_new):
+    device = eps_prev.device
+    dtype = eps_prev.dtype
+    B, C, H1, W1 = target_shape
+    H0, W0 = eps_prev.shape[-2], eps_prev.shape[-1]
+    g = torch.Generator(device=device)
+    g.manual_seed(seed_new)
+    eta = torch.randn((B, C, H1, W1), generator=g, device=device, dtype=dtype)
+    proj = _project_to_coarse_subspace(eta, H0, W0, H1, W1, device)
+    eta_perp = eta - proj
+    lifted = _lift_noise(eps_prev, H1, W1)
+    return lifted + eta_perp
 
 
 def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
@@ -258,13 +334,17 @@ def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
-                   add_noise=True, force_final_denoise=False):
+                   add_noise=True, force_final_denoise=False,
+                   eps_external=None, last_stage_eps: bool = False):
     latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
     sigmas = sigmas.to(device) if isinstance(sigmas, torch.Tensor) else torch.tensor(sigmas, dtype=x0.dtype, device=device)
-    eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
-                          noise_bias=noise_bias, dtype=x0.dtype, device=device)
+    if eps_external is not None:
+        eps = eps_external
+    else:
+        eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
+                              noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
     if force_final_denoise and sigmas[-1] != 0:
@@ -278,7 +358,10 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
         disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
         seed=noise_seed,
     )
-    return {"samples": samples}
+    out = {"samples": samples}
+    if last_stage_eps:
+        out["last_eps"] = eps
+    return out
 
 
 class ZImageTurboProgressive(io.ComfyNode):
@@ -312,8 +395,11 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("noise_strength", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
-                io.Boolean.Input("noise_inversion", default=True,
-                                tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
+                io.Combo.Input("stage_handoff_mode", options=["off", "legacy", "locked"], default="off",
+                                tooltip=("Stage-to-stage handoff mode.\n"
+                                         "off: skip _noise_inverse entirely; each stage samples fresh noise.\n"
+                                         "legacy (default): _noise_inverse called with sigma_target=0, returns x0. Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising.\n"
+                                         "locked: _noise_inverse called with stage_{i+1} first sigma; output fed to stage_{i+1} sampler as epsilon. Tighter signal continuity; experimental.")),
                 io.Int.Input("stage3_count", default=1, min=1, max=4,
                              tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). Outputs latent_stage3_0..3 (unused slots = None)."),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
@@ -342,13 +428,13 @@ class ZImageTurboProgressive(io.ComfyNode):
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
                 creativity_mode: str, noise_bias_offset: float, stage_resolution_chain: str,
-                noise_strength: float, noise_inversion: bool,
+                noise_strength: float,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str, stage3_count: int = 1,
+                stage_handoff_mode: str = "legacy",
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
-        noise_inversion_bool = noise_inversion
         negative = positive or [] if cfg > 0 else []
         cond = positive or []
 
@@ -374,7 +460,11 @@ class ZImageTurboProgressive(io.ComfyNode):
         initial_noise_scale = 1.0 + noise_overdose
         initial_bias_level = min(max(20.0 * noise_bias_offset + noise_bias_level_from_strength,
                                     -10.0), 10.0)
-        noise_inversion_effective = noise_inversion_bool and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
+        handoff_mode = stage_handoff_mode
+        noise_inversion_effective = handoff_mode != "off" and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
+        handoff_use_locked = handoff_mode == "locked"
+        handoff_sigma_s2 = float(sigmas1[-1].item()) if handoff_use_locked and sigmas1 is not None and sigmas1.numel() >= 1 else 0.0
+        handoff_sigma_s3 = float(sigmas2[-1].item()) if handoff_use_locked and sigmas2 is not None and sigmas2.numel() >= 1 else 0.0
 
         sampler1 = _cached_sampler(stage1_sampler)
         sampler2 = _cached_sampler(stage2_sampler)
@@ -415,13 +505,27 @@ class ZImageTurboProgressive(io.ComfyNode):
             noise_bias=probe_noise_bias,
             add_noise=add_noise_bool,
             force_final_denoise=True,
+            last_stage_eps=True,
         )
 
         if sigmas2 is not None:
             latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+            eps_external_s2 = None
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(model, latent_s2_in["samples"], 0.0, seed + 8)
-                latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
+                if handoff_use_locked and "last_eps" in latent_s1:
+                    target_shape_s2 = (latent_s2_in["samples"].shape[0],
+                                        latent_s2_in["samples"].shape[1],
+                                        latent_s2_in["samples"].shape[2],
+                                        latent_s2_in["samples"].shape[3])
+                    skip_tensor = _locked_noise_from_prev(latent_s1["last_eps"], target_shape_s2, seed + 8)
+                else:
+                    skip_tensor = _noise_inverse(model, latent_s2_in["samples"], handoff_sigma_s2, seed + 8)
+                if handoff_use_locked:
+                    pass
+                else:
+                    latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
+                if handoff_use_locked:
+                    eps_external_s2 = skip_tensor
             if do_scramble:
                 t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
@@ -440,6 +544,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 noise_bias=probe_noise_bias,
                 add_noise=True,
                 force_final_denoise=sigmas3 is None,
+                eps_external=eps_external_s2,
+                last_stage_eps=sigmas3 is not None,
             )
         else:
             latent_s2 = latent_s1
@@ -449,12 +555,23 @@ class ZImageTurboProgressive(io.ComfyNode):
             latent_s3_slots: list = [None] * 4
             for i in range(stage3_count):
                 s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-                skip_tensor = (
-                    _noise_inverse(model, s3_input["samples"], 0.0, 696968 + i)
-                    if noise_inversion_effective
-                    else None
-                )
-                s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
+                if noise_inversion_effective:
+                    if handoff_use_locked and "last_eps" in latent_s2:
+                        target_shape_s3 = (s3_input["samples"].shape[0],
+                                            s3_input["samples"].shape[1],
+                                            s3_input["samples"].shape[2],
+                                            s3_input["samples"].shape[3])
+                        skip_tensor = _locked_noise_from_prev(latent_s2["last_eps"], target_shape_s3, 696968 + i)
+                    else:
+                        skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, 696968 + i)
+                else:
+                    skip_tensor = None
+                if handoff_use_locked:
+                    pass
+                else:
+                    s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
+                s3_iter_in = latent_s3_base_in if handoff_use_locked else ({**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in)
+                eps_external_s3 = skip_tensor if (handoff_use_locked and skip_tensor is not None) else None
                 latent_s3 = _stage_denoise(
                     model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
                     noise_seed=696969 + i,
@@ -462,6 +579,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                     noise_bias=probe_noise_bias,
                     add_noise=True,
                     force_final_denoise=not return_noise_bool,
+                    eps_external=eps_external_s3,
+                    last_stage_eps=False,
                 )
                 latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
                 latent_s3_slots[i] = latent_s3
