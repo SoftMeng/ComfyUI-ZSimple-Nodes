@@ -148,7 +148,7 @@ pip install -r requirements.txt
 > - **`return_leftover_noise=enable`**：stage3 终止时 `sigmas3[-1]` 不强制为 0，输出 latent 保留残 σ 噪波，可被下游节点当作起点继续 denoise。
 > - **`latent_scaling`**：X21 latent_sample_scales 三元组 `(stage0, stage1, stage2)`。`stage3` 永远 = 输入尺寸（不缩）。`fast` 是 X21 默认速度档（首 stage 缩到 1/4），`quality` 是精细档（首 stage 1/2），`none` 跳过尺寸调整（按 stage 配 sampler 自决）。
 > - **`intensity`**：V2 advanced 的 `initial_noise_overdose` + `bias_level` 双参合一。`intensity=1.0` 完全不修改噪声；`intensity=1.5` 注入 +20% 噪声 + 5× 探针偏置。
-> - **`creativity_mode=on`**：stage2 在 denoise 前会**几何 scramble latent** + 跑 1 步 euler preproc——这就是 X21 的 scramble+refine 链路语义。
+> - **`creativity_mode=on`**：stage2 在 denoise 前会**几何 scramble latent** + 跑 1 步 euler preproc——这就是 X21 的 scramble+refine 链路语义。stage2 输入管线顺序为 `noise_inversion → scramble → preproc`：scramble 作用在 noise_inversion 接力出的 x0 之上，不会被覆盖。
 
 #### 输出
 
