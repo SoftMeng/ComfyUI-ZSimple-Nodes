@@ -138,7 +138,7 @@ pip install -r requirements.txt
 | `steps` | INT | 8 | 总步数（`8` → `bravo_8`，3–7 → `alpha_N`；>8 回落 bravo_8）|
 | `creativity_mode` | COMBO | `off` | `on`：stage2 scramble + 1 步 coherence preproc；`seed % 3 == 0` 跳过 preproc |
 | `initial_bias` | FLOAT | 0.0 | 非零时跑小尺寸探针补偿 preset sigmas1<1.0 的低频缺口 |
-| `latent_scaling` | COMBO | `fast` | X21 风格 `(stage0, stage1, stage2)` 缩放因子；`stage3` 永远 = 输入尺寸：`fast`=(0.25, 0.5, 1.0) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
+| `latent_scaling` | COMBO | `quality` | X21 风格 `(stage0, stage1, stage2)` 缩放因子；`stage3` 永远 = 输入尺寸：`fast`=(0.25, 0.5, 1.0) / `quality`=(0.5, 0.75, 1.0) / `none`=(1, 1, 1) |
 | `intensity` | FLOAT | 1.0 | 初始噪声 overdose=`(intensity-1)*0.4` + bias level=`intensity*4-1`；1.0 = 无变化 |
 | `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | COMBO | euler / euler / dpmpp_sde | 三阶段独立采样器（`comfy.samplers.SAMPLER_NAMES` 全集）|
 

@@ -275,7 +275,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
                 io.Float.Input("noise_bias_offset", default=0.0, min=-0.5, max=0.5, step=0.1,
                                 tooltip="Noise bias offset. Internally clamps 20*noise_bias_offset + noise_strength*4-1 to ±10. For single-knob control, keep `noise_bias_offset=0` and use `noise_strength` instead. Non-zero values trigger a 64x64 noise probe."),
-                io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="fast",
+                io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="quality",
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("noise_strength", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
