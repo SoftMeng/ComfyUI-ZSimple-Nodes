@@ -335,7 +335,7 @@ class ZImageTurboProgressive(io.ComfyNode):
             return io.NodeOutput(latent_input)
 
         noise_overdose = (noise_strength - 1.0) * 0.4
-        noise_bias_level_from_strength = noise_strength * 4 - 1
+        noise_bias_level_from_strength = (noise_strength * 4 - 1) if noise_bias_offset != 0.0 else 0.0
         initial_noise_scale = 1.0 + noise_overdose
         initial_bias_level = min(max(20.0 * noise_bias_offset + noise_bias_level_from_strength,
                                     -10.0), 10.0)
@@ -388,6 +388,9 @@ class ZImageTurboProgressive(io.ComfyNode):
 
         if sigmas2 is not None:
             latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+            if noise_inversion_effective:
+                skip_tensor = _noise_inverse(model, latent_s2_in["samples"], 0.0, seed + 8)
+                latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
             if creativity_on:
                 t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
@@ -397,10 +400,6 @@ class ZImageTurboProgressive(io.ComfyNode):
                     model, latent_s2_in, cfg, preproc_n, cond,
                     sampler2, seed + 16,
                 )
-            if noise_inversion_effective:
-                s2_input = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
-                skip_tensor = _noise_inverse(model, s2_input["samples"], 0.0, seed + 8)
-                latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
 
             latent_s2 = _stage_denoise(
                 model, latent_s2_in, cond, negative, cfg, sampler2, sigmas2,
