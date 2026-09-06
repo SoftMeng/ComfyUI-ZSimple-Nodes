@@ -33,20 +33,31 @@ _SIGMA_PRESETS_BY_NAME = {
     "alpha_6" : [(0.991, 0.920), (0.935, 0.770, 0.690, 0.000), (0.658, 0.302, 0.000)],
     "alpha_7" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.800, 0.000), (0.658, 0.302, 0.000)],
     "alpha_8" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
-    "alpha_9" : [(0.991, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
+    "alpha_9" : [(0.991, 0.960, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.302, 0.000)],
+    "alpha_10" : [(0.991, 0.960, 0.920), (0.935, 0.900, 0.875, 0.820, 0.750, 0.000), (0.658, 0.4556, 0.200, 0.000)],
 }
 
-_BASE_S1 = (0.991, 0.920)
+_BASE_S1_LOW = (0.960, 0.920)
+_BASE_S1_HIGH = (0.991, 0.920)
 _BASE_S2 = (0.935, 0.900, 0.875, 0.820, 0.750, 0.000)
 _BASE_S3 = (0.658, 0.4556, 0.200, 0.000)
 
+_BASE_S1_BY_MODE = {
+    "off": _BASE_S1_HIGH,
+    "lite": _BASE_S1_LOW,
+    "middle": _BASE_S1_HIGH,
+    "high": _BASE_S1_LOW,
+}
+
+_MODE_DOES_SCRAMBLE = {"middle", "high"}
+_MODE_DOES_PREPROC = {"lite", "middle", "high"}
+
 _ALPHA_INSERT_COUNTS: dict[int, tuple[int, int]] = {
-    10: (1, 1),
-    11: (2, 2),
-    12: (3, 3),
-    13: (4, 4),
-    14: (5, 5),
-    15: (6, 6),
+    11: (1, 1),
+    12: (2, 2),
+    13: (3, 3),
+    14: (4, 4),
+    15: (5, 5),
 }
 
 
@@ -65,26 +76,43 @@ def _refine_sigma_sequence(sigmas, insert_count: int):
     return sigmas
 
 
-def _get_sigma_preset(steps: int):
-    if 10 <= steps <= 15:
+def _get_sigma_preset(steps: int, mode: str = "middle"):
+    s1 = _BASE_S1_BY_MODE.get(mode, _BASE_S1_HIGH)
+    if f"alpha_{steps}" in _SIGMA_PRESETS_BY_NAME:
+        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
+    if steps in _ALPHA_INSERT_COUNTS:
         s2_inserts, s3_inserts = _ALPHA_INSERT_COUNTS[steps]
         return (
-            _BASE_S1,
+            s1,
             tuple(_refine_sigma_sequence(_BASE_S2, s2_inserts)),
             tuple(_refine_sigma_sequence(_BASE_S3, s3_inserts)),
         )
-    if 3 <= steps <= 9:
-        return _SIGMA_PRESETS_BY_NAME[f"alpha_{steps}"]
+    if 10 <= steps <= 99:
+        extra = steps - 9
+        n1 = int(0.4 + 0.6 * extra)
+        n2 = extra - n1
+        return (
+            s1,
+            tuple(_refine_sigma_sequence(_BASE_S2, n2)),
+            tuple(_refine_sigma_sequence(_BASE_S3, n1)),
+        )
     return _SIGMA_PRESETS_BY_NAME["alpha_8"]
 
 _LATENT_SCALING = {
     "fast"      : (0.25, 0.50, 1.00),
     "quality"   : (0.50, 0.75, 1.00),
-    "aggressive": (0.5, 0.5, 1.00),
+    "aggressive": (0.75, 0.75, 1.00),
     "none"      : (1.00, 1.00, 1.00),
 }
 
 _REFINE_ENTER_SIGMA = 0.658
+
+_STAGE3_CHAIN_SIGMAS = (
+    (0.800, 0.366, 0.000),
+    (0.550, 0.252, 0.000),
+    (0.300, 0.137, 0.000),
+    (0.100, 0.046, 0.000),
+)
 
 
 def _slice_sigmas_at_entry(sigmas, enter_sigma: float):
@@ -158,8 +186,8 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
     anchors = ('left', 'top', 'right', 'bottom')
     for anchor_idx, anchor in enumerate(anchors):
         for _ in range(abs(counts[anchor_idx])):
-            fh = int(H * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
-            fw = int(W * (0.50 + 0.25 * torch.rand(1, generator=generator).item()))
+            fh = int(H * (0.70 + 0.10 * torch.rand(1, generator=generator).item()))
+            fw = int(W * (0.70 + 0.10 * torch.rand(1, generator=generator).item()))
             fh = max(8, min(fh, H))
             fw = max(8, min(fw, W))
             if anchor in ('left', 'right'):
@@ -170,9 +198,9 @@ def _scramble_tensor(x: torch.Tensor, counts: tuple, seed: int) -> torch.Tensor:
                 fx = torch.randint(0, max(1, W - fw + 1), (1,), generator=generator).item()
             frag = x[:, :, fy:fy + fh, fx:fx + fw].clone()
             if counts[anchor_idx] < 0:
-                if torch.rand(1, generator=generator).item() > 0.5:
+                if torch.rand(1, generator=generator).item() > 0.85:
                     frag = torch.flip(frag, dims=[-1])
-                if torch.rand(1, generator=generator).item() > 0.5:
+                if torch.rand(1, generator=generator).item() > 0.85:
                     frag = torch.flip(frag, dims=[-2])
             frag_resized = F.interpolate(frag, size=(H, W), mode='bicubic', align_corners=False)
             result = result + frag_resized
@@ -188,9 +216,11 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
     if preproc_steps <= 0:
         return latent
     latents = latent["samples"]
+    latents = _inject_low_freq_noise(latents, noise_seed, freq=1024, scale=0.8)
+    latent = {**latent, "samples": latents}
     sigmas = torch.tensor((0.949, 0.0), dtype=latents.dtype, device=latents.device)
     out_dict = _stage_denoise(
-        model, {"samples": latents}, preproc_positive, preproc_positive, cfg,
+        model, latent, preproc_positive, preproc_positive, cfg,
         sampler, sigmas,
         noise_seed=noise_seed,
         noise_scale=1.0, noise_bias=0.0,
@@ -198,6 +228,92 @@ def _stage2_preproc(model, latent, cfg, preproc_steps, preproc_positive,
         force_final_denoise=True,
     )
     return {"samples": out_dict["samples"]}
+
+
+def _inject_low_freq_noise(x, seed, freq=1024, scale=0.8):
+    h, w = x.shape[-2:]
+    if scale <= 0.0 or freq < (1024 / h) or freq < (1024 / w):
+        return x
+    low_res_shape = (*x.shape[:-2], (h * freq) // 1024, (w * freq) // 1024)
+    g = torch.Generator(device=x.device).manual_seed(seed + 1)
+    noise = torch.randn(low_res_shape, dtype=x.dtype, layout=x.layout, generator=g, device=x.device)
+    return x + F.interpolate(noise, size=(h, w), mode="bilinear", align_corners=False) * scale
+
+
+# TODO thread-safety: _PARTITION_CACHE is a module-level dict; concurrent
+# ZImageTurboProgressive instances may race. Mirrors C2 (ZImageTurboProgressiveLockedUpscale).
+_PARTITION_CACHE = {}
+
+
+def _build_partition_map(low_n: int, high_n: int, device):
+    if high_n < low_n:
+        raise ValueError(f"Partition requires high_n >= low_n, got {high_n} < {low_n}")
+    key = (low_n, high_n, device.type)
+    if key in _PARTITION_CACHE:
+        return _PARTITION_CACHE[key]
+    base = high_n // low_n
+    rem = high_n % low_n
+    counts = torch.full((low_n,), base, dtype=torch.long, device=device)
+    if rem > 0:
+        counts[:rem] += 1
+    map_hi_to_lo = torch.repeat_interleave(torch.arange(low_n, device=device), counts)
+    inv_sqrt = (counts.float().rsqrt())[map_hi_to_lo]
+    _PARTITION_CACHE[key] = (map_hi_to_lo, inv_sqrt, counts)
+    return map_hi_to_lo, inv_sqrt, counts
+
+
+def _reduce_height(x, map_h, inv_sqrt_h, low_h):
+    B, C, Hh, W = x.shape
+    out = torch.zeros((B, C, low_h, W), device=x.device, dtype=x.dtype)
+    out.index_add_(2, map_h, x * inv_sqrt_h.view(1, 1, Hh, 1))
+    return out
+
+
+def _expand_height(coeff, map_h, inv_sqrt_h):
+    Hh = map_h.shape[0]
+    return coeff.index_select(2, map_h) * inv_sqrt_h.view(1, 1, Hh, 1)
+
+
+def _reduce_width(x, map_w, inv_sqrt_w, low_w):
+    B, C, H, Ww = x.shape
+    out = torch.zeros((B, C, H, low_w), device=x.device, dtype=x.dtype)
+    out.index_add_(3, map_w, x * inv_sqrt_w.view(1, 1, 1, Ww))
+    return out
+
+
+def _expand_width(coeff, map_w, inv_sqrt_w):
+    Ww = map_w.shape[0]
+    return coeff.index_select(3, map_w) * inv_sqrt_w.view(1, 1, 1, Ww)
+
+
+def _project_to_coarse_subspace(x, low_h, low_w, high_h, high_w, device):
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    tmp = _reduce_width(x, map_w, inv_w, low_w)
+    coeff = _reduce_height(tmp, map_h, inv_h, low_h)
+    return _expand_width(_expand_height(coeff, map_h, inv_h), map_w, inv_w)
+
+
+def _lift_noise(eps_prev, high_h, high_w):
+    device = eps_prev.device
+    low_h, low_w = eps_prev.shape[-2], eps_prev.shape[-1]
+    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
+    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
+    return _expand_width(_expand_height(eps_prev, map_h, inv_h), map_w, inv_w)
+
+
+def _locked_noise_from_prev(eps_prev, target_shape, seed_new):
+    device = eps_prev.device
+    dtype = eps_prev.dtype
+    B, C, H1, W1 = target_shape
+    H0, W0 = eps_prev.shape[-2], eps_prev.shape[-1]
+    g = torch.Generator(device=device)
+    g.manual_seed(seed_new)
+    eta = torch.randn((B, C, H1, W1), generator=g, device=device, dtype=dtype)
+    proj = _project_to_coarse_subspace(eta, H0, W0, H1, W1, device)
+    eta_perp = eta - proj
+    lifted = _lift_noise(eps_prev, H1, W1)
+    return lifted + eta_perp
 
 
 def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
@@ -225,13 +341,17 @@ def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int
 
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
-                   add_noise=True, force_final_denoise=False):
+                   add_noise=True, force_final_denoise=False,
+                   eps_external=None, last_stage_eps: bool = False):
     latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
     sigmas = sigmas.to(device) if isinstance(sigmas, torch.Tensor) else torch.tensor(sigmas, dtype=x0.dtype, device=device)
-    eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
-                          noise_bias=noise_bias, dtype=x0.dtype, device=device)
+    if eps_external is not None:
+        eps = eps_external
+    else:
+        eps = _generate_noise(noise_seed, x0.shape, noise_scale=noise_scale,
+                              noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
     if force_final_denoise and sigmas[-1] != 0:
@@ -245,7 +365,47 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
         disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
         seed=noise_seed,
     )
-    return {"samples": samples}
+    out = {"samples": samples}
+    if last_stage_eps:
+        out["last_eps"] = eps
+    return out
+
+
+def _stage3_chain_step(model, x0_latent, sigmas, cond, negative, cfg, sampler3,
+                        noise_seed, probe_noise_scale, probe_noise_bias,
+                        handoff_mode, last_eps, handoff_sigma_s3, target_h, target_w):
+    s3_input = adjust_latent_size(x0_latent, factor=1.0)
+    noise_inversion_effective = handoff_mode != "off" and (abs(s3_input["samples"].shape[-2] - target_h) > 1e-6 or abs(s3_input["samples"].shape[-1] - target_w) > 1e-6)
+    handoff_use_locked = handoff_mode == "locked"
+    if noise_inversion_effective:
+        if handoff_use_locked and last_eps is not None:
+            target_shape_s3 = (s3_input["samples"].shape[0],
+                                s3_input["samples"].shape[1],
+                                s3_input["samples"].shape[2],
+                                s3_input["samples"].shape[3])
+            skip_tensor = _locked_noise_from_prev(last_eps, target_shape_s3, noise_seed)
+        else:
+            skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, noise_seed)
+        if handoff_use_locked:
+            eps_external = skip_tensor
+            s3_iter_in = x0_latent
+        else:
+            s3_iter_in = {**s3_input, "samples": skip_tensor}
+            eps_external = None
+    else:
+        s3_iter_in = s3_input
+        eps_external = None
+    out = _stage_denoise(
+        model, s3_iter_in, cond, negative, cfg, sampler3, sigmas,
+        noise_seed=noise_seed,
+        noise_scale=probe_noise_scale,
+        noise_bias=probe_noise_bias,
+        add_noise=True,
+        force_final_denoise=True,
+        eps_external=eps_external,
+        last_stage_eps=True,
+    )
+    return adjust_latent_size(out, target_size=(target_h, target_w))
 
 
 class ZImageTurboProgressive(io.ComfyNode):
@@ -262,7 +422,7 @@ class ZImageTurboProgressive(io.ComfyNode):
                 io.Model.Input("model"),
                 io.Conditioning.Input("positive"),
                 io.Float.Input("cfg", default=1.0, min=0.0, max=15.0, step=0.1,
-                                tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0 (positive == negative)."),
+                                tooltip="CFG scale. Z-Image Turbo is distilled; recommended 1.0."),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
                              tooltip="Seed for stage1. Stage2/3 use deterministic offsets (seed+16, 696969)."),
                 io.Combo.Input("add_noise", options=["enable", "disable"], default="enable",
@@ -271,18 +431,25 @@ class ZImageTurboProgressive(io.ComfyNode):
                                 tooltip="Stage3 leaves residual σ noise in the output latent so downstream sampler nodes can continue from a partially-denoised state."),
                 io.Int.Input("steps", default=8, min=2, max=64,
                              tooltip="Total denoise steps. 8 selects alpha_8; 3-15 selects alpha_N; >15 falls back to alpha_8."),
-                io.Boolean.Input("creativity_mode", default=False,
-                                tooltip="On: stage2 scramble + 1-step coherence preproc (X21 behavior). seed%3==0 skips preproc for higher creativity."),
+                io.Combo.Input("creativity_mode", options=["off", "lite", "middle", "high"], default="lite",
+                                tooltip="off: skip stage2 scramble + preproc (silent stage2). lite: stage1 s1 starts at 0.960, no scramble, preproc still runs. middle: original 0.991 s1 + scramble + preproc. high: 0.960 s1 + scramble + preproc."),
                 io.Float.Input("noise_bias_offset", default=0.0, min=-0.5, max=0.5, step=0.1,
                                 tooltip="Noise bias offset. Internally clamps 20*noise_bias_offset + noise_strength*4-1 to ±10. For single-knob control, keep `noise_bias_offset=0` and use `noise_strength` instead. Non-zero values trigger a 64x64 noise probe."),
-                io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="fast",
+                io.Combo.Input("stage_resolution_chain", options=list(_LATENT_SCALING.keys()), default="quality",
                                 tooltip="Stage size chain. fast=(0.25,0.50,1.00) quality=(0.50,0.75,1.00) aggressive=(0.25,0.50,0.75) none=(1,1,1). aggressive shrinks stage3 to 0.75x then resizes back to input."),
                 io.Float.Input("noise_strength", default=1.0, min=0.0, max=2.0, step=0.1,
                                 tooltip="Initial noise overdose (noise_strength-1)*0.4 + bias level (noise_strength*4-1). 1.0 = no change. Combines with `noise_bias_offset`; for clean control set `noise_bias_offset=0`."),
-                io.Boolean.Input("noise_inversion", default=True,
-                                tooltip="Stage handoff: pass each prior stage's fully-denoised output as the next stage's clean starting latent. Skipped on none mode (all sizes equal). Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising."),
+                io.Combo.Input("stage_handoff_mode", options=["off", "legacy", "locked"], default="legacy",
+                                tooltip=("Stage-to-stage handoff mode.\n"
+                                         "off: skip _noise_inverse entirely; each stage samples fresh noise.\n"
+                                         "legacy (default): _noise_inverse called with sigma_target=0, returns x0. Stage entrance internally re-noises via ModelSamplingDiscreteFlow noise_scaling, so the previous stage's signal survives into the next stage without double noising.\n"
+                                         "locked: _noise_inverse called with stage_{i+1} first sigma; output fed to stage_{i+1} sampler as epsilon. Tighter signal continuity; experimental.")),
                 io.Int.Input("stage3_count", default=1, min=1, max=4,
-                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times with different noise (seed+696968+i). Outputs latent_stage3_0..3 (unused slots = None)."),
+                             tooltip="Stage 3 batch count. stage1/stage2 run once; stage3 runs N times (chain or batch per stage3_chain_mode). Outputs latent_stage3_0..3 (unused slots = None)."),
+                io.Combo.Input("stage3_chain_mode", options=["off", "chain"], default="chain",
+                                tooltip=("Stage 3 mode.\n"
+                                         "off: legacy batch — N independent candidates from stage2 latent with different noise.\n"
+                                         "chain (default): N serial refinements — slot i refines slot i-1's output latent. Sigma sequence per slot follows _STAGE3_CHAIN_SIGMAS; count>4 capped at 4.")),
                 io.Combo.Input("stage1_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage2_sampler", options=SAMPLER_NAMES, default="euler"),
                 io.Combo.Input("stage3_sampler", options=SAMPLER_NAMES, default="dpmpp_sde"),
@@ -300,25 +467,28 @@ class ZImageTurboProgressive(io.ComfyNode):
                                   tooltip="Stage 3 batch slot 2 (noise_seed=696969+2). None when stage3_count<3."),
                 io.Latent.Output("latent_stage3_3",
                                   tooltip="Stage 3 batch slot 3 (noise_seed=696969+3). None when stage3_count<4."),
+                io.Latent.Output("debug_scrambled_latent",
+                                  tooltip="Debug only: latent right after scramble (creativity_mode path) or right after noise_inversion (no-creativity path), before stage2 preproc/denoise. Feed to VAE Decode to inspect. None when no stage2."),
             ],
         )
 
     @classmethod
     def execute(cls, latent_input: dict, model: Any, cfg: float, seed: int,
                 add_noise: str, return_leftover_noise: str, steps: int,
-                creativity_mode: bool, noise_bias_offset: float, stage_resolution_chain: str,
-                noise_strength: float, noise_inversion: bool,
+                creativity_mode: str, noise_bias_offset: float, stage_resolution_chain: str,
+                noise_strength: float,
                 stage1_sampler: str, stage2_sampler: str, stage3_sampler: str, stage3_count: int = 1,
+                stage3_chain_mode: str = "chain",
+                stage_handoff_mode: str = "legacy",
                 positive: list | None = None) -> io.NodeOutput:
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
-        noise_inversion_bool = noise_inversion
         negative = positive or [] if cfg > 0 else []
         cond = positive or []
 
         s1_factor, s2_factor, s3_factor = _LATENT_SCALING[stage_resolution_chain]
-        sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps)
+        sigmas1_tuple, sigmas2_tuple, sigmas3_tuple = _get_sigma_preset(steps, creativity_mode)
 
         def _to_tensor(tup):
             if not tup:
@@ -339,7 +509,11 @@ class ZImageTurboProgressive(io.ComfyNode):
         initial_noise_scale = 1.0 + noise_overdose
         initial_bias_level = min(max(20.0 * noise_bias_offset + noise_bias_level_from_strength,
                                     -10.0), 10.0)
-        noise_inversion_effective = noise_inversion_bool and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
+        handoff_mode = stage_handoff_mode
+        noise_inversion_effective = handoff_mode != "off" and (abs(s1_factor - s2_factor) > 1e-6 or abs(s2_factor - s3_factor) > 1e-6)
+        handoff_use_locked = handoff_mode == "locked"
+        handoff_sigma_s2 = float(sigmas1[-1].item()) if handoff_use_locked and sigmas1 is not None and sigmas1.numel() >= 1 else 0.0
+        handoff_sigma_s3 = float(sigmas2[-1].item()) if handoff_use_locked and sigmas2 is not None and sigmas2.numel() >= 1 else 0.0
 
         sampler1 = _cached_sampler(stage1_sampler)
         sampler2 = _cached_sampler(stage2_sampler)
@@ -352,8 +526,9 @@ class ZImageTurboProgressive(io.ComfyNode):
         target_h, target_w = latent_input["samples"].shape[-2:]
 
 
-        creativity_on = creativity_mode
+        creativity_on = creativity_mode in _MODE_DOES_PREPROC
         high_as_a_kite = (seed % 3) == 0
+        do_scramble = creativity_mode in _MODE_DOES_SCRAMBLE
         preproc_n = 0 if (not creativity_on or high_as_a_kite) else 1
 
         probe_noise_bias = torch.zeros(0, device=model.load_device)
@@ -370,11 +545,6 @@ class ZImageTurboProgressive(io.ComfyNode):
             probe_noise_bias = (pbias / pscale.clamp(min=1e-6)).clamp(-0.005, 0.005)
             probe_noise_bias = probe_noise_bias * initial_bias_level
 
-        if add_noise_bool and creativity_on:
-            t = latent_input["samples"]
-            t = _scramble_tensor(t, _scramble_counts(seed), seed)
-            latent_input = {**latent_input, "samples": t}
-
         latent_s1_in = adjust_latent_size(latent_input, factor=s1_factor)
 
         latent_s1 = _stage_denoise(
@@ -384,17 +554,32 @@ class ZImageTurboProgressive(io.ComfyNode):
             noise_bias=probe_noise_bias,
             add_noise=add_noise_bool,
             force_final_denoise=True,
+            last_stage_eps=True,
         )
 
         if sigmas2 is not None:
             latent_s2_in = adjust_latent_size(latent_s1, factor=s2_factor / s1_factor)
+            eps_external_s2 = None
             if noise_inversion_effective:
-                skip_tensor = _noise_inverse(model, latent_s2_in["samples"], 0.0, seed + 8)
-                latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
-            if creativity_on:
+                if handoff_use_locked and "last_eps" in latent_s1:
+                    target_shape_s2 = (latent_s2_in["samples"].shape[0],
+                                        latent_s2_in["samples"].shape[1],
+                                        latent_s2_in["samples"].shape[2],
+                                        latent_s2_in["samples"].shape[3])
+                    skip_tensor = _locked_noise_from_prev(latent_s1["last_eps"], target_shape_s2, seed + 8)
+                else:
+                    skip_tensor = _noise_inverse(model, latent_s2_in["samples"], handoff_sigma_s2, seed + 8)
+                if handoff_use_locked:
+                    pass
+                else:
+                    latent_s2_in = {**latent_s2_in, "samples": skip_tensor}
+                if handoff_use_locked:
+                    eps_external_s2 = skip_tensor
+            if do_scramble:
                 t = latent_s2_in["samples"]
                 t = _scramble_tensor(t, _scramble_counts(seed), seed)
                 latent_s2_in = {**latent_s2_in, "samples": t}
+            debug_scrambled_latent = {"samples": latent_s2_in["samples"].clone()}
             if preproc_n > 0:
                 latent_s2_in = _stage2_preproc(
                     model, latent_s2_in, cfg, preproc_n, cond,
@@ -408,6 +593,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 noise_bias=probe_noise_bias,
                 add_noise=True,
                 force_final_denoise=sigmas3 is None,
+                eps_external=eps_external_s2,
+                last_stage_eps=sigmas3 is not None,
             )
         else:
             latent_s2 = latent_s1
@@ -415,26 +602,61 @@ class ZImageTurboProgressive(io.ComfyNode):
         if sigmas3 is not None:
             latent_s3_base_in = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
             latent_s3_slots: list = [None] * 4
-            for i in range(stage3_count):
-                s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
-                skip_tensor = (
-                    _noise_inverse(model, s3_input["samples"], 0.0, 696968 + i)
-                    if noise_inversion_effective
-                    else None
-                )
-                s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
-                latent_s3 = _stage_denoise(
-                    model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
-                    noise_seed=696969 + i,
-                    noise_scale=probe_noise_scale,
-                    noise_bias=probe_noise_bias,
-                    add_noise=True,
-                    force_final_denoise=not return_noise_bool,
-                )
-                latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
-                latent_s3_slots[i] = latent_s3
+            if stage3_chain_mode == "chain":
+                current_x0 = latent_s3_base_in
+                chain_last_eps = latent_s2.get("last_eps") if isinstance(latent_s2, dict) else None
+                for i in range(stage3_count):
+                    chain_sigmas = _to_tensor(_STAGE3_CHAIN_SIGMAS[min(i, 3)])
+                    chain_seed = 696968 + i
+                    out = _stage3_chain_step(
+                        model, current_x0, chain_sigmas, cond, negative, cfg, sampler3,
+                        noise_seed=chain_seed,
+                        probe_noise_scale=probe_noise_scale,
+                        probe_noise_bias=probe_noise_bias,
+                        handoff_mode=stage_handoff_mode,
+                        last_eps=chain_last_eps,
+                        handoff_sigma_s3=handoff_sigma_s3,
+                        target_h=target_h, target_w=target_w,
+                    )
+                    latent_s3_slots[i] = out
+                    current_x0 = out
+                    if isinstance(out, dict) and "last_eps" in out:
+                        chain_last_eps = out["last_eps"]
+            else:
+                for i in range(stage3_count):
+                    s3_input = adjust_latent_size(latent_s2, factor=s3_factor / s2_factor)
+                    if noise_inversion_effective:
+                        if handoff_use_locked and "last_eps" in latent_s2:
+                            target_shape_s3 = (s3_input["samples"].shape[0],
+                                                s3_input["samples"].shape[1],
+                                                s3_input["samples"].shape[2],
+                                                s3_input["samples"].shape[3])
+                            skip_tensor = _locked_noise_from_prev(latent_s2["last_eps"], target_shape_s3, 696968 + i)
+                        else:
+                            skip_tensor = _noise_inverse(model, s3_input["samples"], handoff_sigma_s3, 696968 + i)
+                    else:
+                        skip_tensor = None
+                    if handoff_use_locked:
+                        pass
+                    else:
+                        s3_iter_in = {**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in
+                    s3_iter_in = latent_s3_base_in if handoff_use_locked else ({**latent_s3_base_in, "samples": skip_tensor} if skip_tensor is not None else latent_s3_base_in)
+                    eps_external_s3 = skip_tensor if (handoff_use_locked and skip_tensor is not None) else None
+                    latent_s3 = _stage_denoise(
+                        model, s3_iter_in, cond, negative, cfg, sampler3, sigmas3,
+                        noise_seed=696969 + i,
+                        noise_scale=probe_noise_scale,
+                        noise_bias=probe_noise_bias,
+                        add_noise=True,
+                        force_final_denoise=not return_noise_bool,
+                        eps_external=eps_external_s3,
+                        last_stage_eps=False,
+                    )
+                    latent_s3 = adjust_latent_size(latent_s3, target_size=(target_h, target_w))
+                    latent_s3_slots[i] = latent_s3
             latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3 = latent_s3_slots
         else:
             latent_s3_0 = latent_s3_1 = latent_s3_2 = latent_s3_3 = None
+            debug_scrambled_latent = None
 
-        return io.NodeOutput(latent_s1, latent_s2, latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3)
+        return io.NodeOutput(latent_s1, latent_s2, latent_s3_0, latent_s3_1, latent_s3_2, latent_s3_3, debug_scrambled_latent)
