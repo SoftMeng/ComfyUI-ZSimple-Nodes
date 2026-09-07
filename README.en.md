@@ -365,7 +365,6 @@ This project is open-sourced under the [MIT License](LICENSE).
 ## 🙏 Acknowledgements
 
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) — for making node-based workflows possible
-- [ComfyUI-ZImagePowerNodes](https://github.com/martin-rizzo/ComfyUI-ZImagePowerNodes) — algorithmic reference for `ZImageTurboProgressive`
 - Everyone who has filed suggestions, feedback, and Issues
 
 <div align="center">

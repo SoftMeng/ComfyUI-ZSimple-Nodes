@@ -367,7 +367,6 @@ python -m pytest tests/
 ## 🙏 致谢
 
 - [ComfyUI](https://github.com/comfyanonymous/ComfyUI) —— 让节点工作流成为可能
-- [ComfyUI-ZImagePowerNodes](https://github.com/martin-rizzo/ComfyUI-ZImagePowerNodes) —— `ZImageTurboProgressive` 节点的核心算法实现参考
 - 所有提供建议、反馈、Issue 的用户
 
 <div align="center">
