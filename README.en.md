@@ -22,10 +22,10 @@
 
 | Node | Pain point | Key features |
 |---|---|---|
-| **RandomNumberPlus** | Inconsistent seed types across nodes | Current seed as INT + STRING + `next_int` (seed + 1) — STRING output plugs directly into string-typed inputs downstream |
-| **SaveImagePlus** | Built-in save node locks you into PNG / fixed compression | PNG / JPEG / WebP / JXL; per-format quality controls; configurable metadata embedding; auto-resuming counter; 4 STRING outputs for chaining |
-| **SaveTextPlus** | Need to dump prompts / workflow JSON to disk fast | `txt` / `md` / `json` / `csv`; auto pretty-print for JSON; returns full path + byte count |
-| **ZImageTurboProgressive** | No single-node 3-stage progressive sampler for Z-Image Turbo | BRAVO/ALPHA hardcoded sigma presets; `stage_resolution_chain` (fast/quality/aggressive/none); `noise_strength` + `noise_bias_offset` dual knobs; 4-level `creativity_mode`; 3-level `stage_handoff_mode`; `stage3_chain_mode` for serial refinement; 7 latent outputs + debug dump |
+| **RandomNumberPlus** | Inconsistent seed types across nodes | Outputs the seed in both number and text format, plus the next seed — drop into any downstream node without type conversions |
+| **SaveImagePlus** | Built-in save node locks you into PNG / fixed compression | Save in PNG / JPG / WebP / JXL, tune each format's quality independently. Auto-numbers every file so nothing ever gets overwritten |
+| **SaveTextPlus** | Need to dump prompts / workflow JSON to disk fast | Save prompts and workflow JSON to disk — never lose a working version again |
+| **ZImageTurboProgressive** | No single-node 3-stage progressive sampler for Z-Image Turbo | A 3-stage progressive sampler for Z-Image Turbo: rough pass → refine → final, all in one node — no manual chaining required |
 
 > [!NOTE]
 > The project is actively iterated; nodes are added on demand. If you have a workflow pain point you'd like solved, open an Issue.
@@ -59,20 +59,24 @@ pip install -r requirements.txt
 
 ### 🎲 RandomNumberPlus (Menu: `ZSimple-Nodes`)
 
-**Purpose**: Random seed generator that outputs the current seed (in multiple types) plus the next value (seed + 1).
+Generates random seeds. Each run gives you a fresh seed value in **both number and text formats** (plug into any downstream node without manual type conversion), plus the **next seed** so you can chain "draw again" actions seamlessly.
 
-| Feature | Description |
+**Typical usage**: feed the number-form seed into a KSampler to reproduce the same image; feed the text-form seed into SaveImagePlus's `filename_prefix` and the filename will automatically include the seed number.
+
+#### Key knobs
+
+| Knob | What it does |
 |---|---|
-| Multi-type outputs | `int_out` (INT current seed) + `string_out` (STRING current seed, plug into `filename_prefix`) + `number_out` (INT, same as int_out) + `next_int` (seed + 1) |
-| Search aliases | `random` / `seed` / `rng` |
-| Post-generation control | `randomize` / `increment` / `decrement` / `fixed` — handled by ComfyUI's front-end widget |
-| Zero deps | Only depends on the ComfyUI V3 API |
+| `seed` | The seed value. The UI gives you "randomize / increment / decrement / lock" controls, so you don't have to type anything |
+
+<details>
+<summary>📋 Full parameter & output reference (click to expand)</summary>
 
 **Inputs**
 
 | Name | Type | Default | Range | Description |
 |---|---|---|---|---|
-| `seed` | INT | 0 | 0 ~ 2⁶⁴-1 | Seed value; `control_after_generate=True` enables the front-end control buttons |
+| `seed` | INT | 0 | 0 ~ 2⁶⁴-1 | Seed value; the UI controls are enabled via `control_after_generate` |
 
 **Outputs**
 
@@ -83,15 +87,31 @@ pip install -r requirements.txt
 | `number_out` | INT | `seed` |
 | `next_int` | INT | `seed + 1` |
 
-**Typical usage**: pipe `int_out` / `next_int` into the next node's KSampler; pipe `string_out` into SaveTextPlus/SaveImagePlus's `filename_prefix`.
+**Search aliases**: `random` / `seed` / `rng`
+
+</details>
 
 ---
 
 ### 🖼️ SaveImagePlus (Menu: `ZSimple-Nodes/image`)
 
-**Purpose**: Single-node image saver with multi-format support, fine-grained compression control, and metadata embedding strategy.
+One node, every image format: PNG (lossless), JPG (compressed), WebP (smaller), JXL (newest and best). Tune quality, compression, and whether to embed prompts and workflow inside the image — all from the node. Files are auto-organized by date and auto-numbered, so you never overwrite old runs.
 
-#### Inputs (11)
+**Typical usage**: drop it right after your image-generation node, pick a format and quality, done.
+
+#### Key knobs
+
+| Knob | What it does |
+|---|---|
+| `format` | Output format: PNG / JPG / WebP / JXL (default: PNG lossless) |
+| `quality` | JPG/WebP quality (default 92 — already very high, visually indistinguishable from lossless for most images) |
+| `filename_prefix` | Filename prefix; files are auto-sorted into date-based subfolders |
+| `embed_metadata` | Whether to embed prompts + workflow into the image (default: embed everything; when JPG workflow is too large, auto-falls back to prompt-only) |
+
+<details>
+<summary>📋 Full parameter & output reference (click to expand)</summary>
+
+#### Inputs
 
 | Name | Type | Default | Description |
 |---|---|---|---|
@@ -102,7 +122,7 @@ pip install -r requirements.txt
 | `format` | COMBO | `png` | `png` / `jpeg` / `webp` / `jxl` |
 | `quality` | INT (1–100) | 92 | JPEG / WebP quality (ignored when `webp_lossless=on`) |
 | `png_compress_level` | INT (0–9) | 9 | PNG compression level (9 = max compression) |
-| `webp_lossless` | COMBO (`off`/`on`) | `off` | When on, uses PIL's default lossless encoder (ignores `quality`) |
+| `webp_lossless` | COMBO (`off`/`on`) | `off` | When on, uses PIL's default lossless encoder |
 | `webp_method` | INT (0–6) | 4 | WebP encoder speed/size tradeoff |
 | `jpeg_subsampling` | COMBO (`4:4:4`/`4:2:0`) | `4:4:4` | Recommended `4:4:4` when Q ≥ 90 |
 | `embed_metadata` | COMBO (`none`/`prompt_only`/`all`) | `all` | PNG tEXt + JPEG EXIF embedding strategy |
@@ -134,13 +154,28 @@ JXL `distance` formula: `distance = max(0.0, (100 - quality) / 20.0)`.
 | `filename_first` | STRING | Filename of the first image in this batch |
 | `workflow_json` | STRING | API workflow JSON dumped from `extra_pnginfo`; empty string when unavailable |
 
+</details>
+
 ---
 
 ### 📝 SaveTextPlus (Menu: `ZSimple-Nodes/text`)
 
-**Purpose**: Save arbitrary text to `.txt` / `.md` / `.json` / `.csv` with single-responsibility fields, plus a `workflow_json` output.
+Saves prompts, workflow JSON, or any multi-line text to a local `.txt` / `.md` / `.json` / `.csv` file. JSON output is auto-formatted with indentation for easy reading.
 
-#### Inputs (7)
+**Typical usage**: archive your current prompt and workflow while debugging; change the filename prefix to keep multiple history versions.
+
+#### Key knobs
+
+| Knob | What it does |
+|---|---|
+| `text` | The text to save (required, multi-line) |
+| `format` | Output format: txt / md / json / csv (default: txt) |
+| `filename_prefix` | Filename prefix; files are auto-sorted into date-based subfolders |
+
+<details>
+<summary>📋 Full parameter & output reference (click to expand)</summary>
+
+#### Inputs
 
 | Name | Type | Default | Description |
 |---|---|---|---|
@@ -163,18 +198,30 @@ JXL `distance` formula: `distance = max(0.0, (100 - quality) / 20.0)`.
 > [!WARNING]
 > **Filename is fixed to `<prefix>_00001.<ext>` and does NOT auto-resume counters** (unlike SaveImagePlus). Repeated saves will **overwrite** the same-named file. To keep multiple snapshots, change `filename_prefix` between runs.
 
+</details>
+
 ---
 
 ### 🎯 ZImageTurboProgressive (Menu: `ZSimple-Nodes/sampling`)
 
-**Purpose**: A 3-stage progressive sampler purpose-built for Z-Image Turbo. Sigma schedules come from **BRAVO/ALPHA hardcoded presets** (per-stage, discontinuous sigmas); the size chain is controlled by `stage_resolution_chain`; initial noise is driven by the `noise_strength` (overdose + bias level) and `noise_bias_offset` (extra probe trigger) dual knobs.
+A **one-click 3-stage sampler** for Z-Image Turbo: sketch at low resolution (fast structure pass) → upscale and refine → final image at target resolution. All in a single block — no need to manually chain three KSamplers.
 
-Algorithm reference: `ComfyUI-ZImagePowerNodes/zsampler_turbo_core.py` and `zsampler_turbo_X21.py`.
+**Typical usage**: use `quality` chain for "fast-then-refined"; bump `creativity_mode` to `middle` or `high` for more variety; set `stage3_count=4` to get four candidates at once.
 
-> [!WARNING]
-> **Not thread-safe**: module-level `_PARTITION_CACHE` (shared with `ComfyUI-ZImageTurboProgressiveLockedUpscale`) will race between concurrent instances. **Run only one `ZImageTurboProgressive` instance at a time.**
+#### Key knobs
 
-#### Inputs (18)
+| Knob | What it does |
+|---|---|
+| `steps` | How many sampling steps (default 8 — the sweet spot for speed vs quality) |
+| `creativity_mode` | How much the model "thinks outside the box": `off`=stays on template / `lite`=slight variation (default) / `middle`=original X21 (some creative flair) / `high`=bold and adventurous |
+| `stage_resolution_chain` | Speed vs detail tradeoff: `fast`=quick sketch (stage 1 at 1/4 size) / `quality`=quality-first (default, stage 1 at 1/2) / `aggressive`=progressive upscale through all 3 stages / `none`=no resizing |
+| `stage_handoff_mode` | How stages hand off between each other: `off`=fully independent / `legacy`=standard handoff (default) / `locked`=tightly anchored to previous stage (experimental) |
+| `stage3_count` | How many candidate images the final stage produces (1–4, can be chain-refined) |
+
+<details>
+<summary>📋 Full parameter & output reference (click to expand)</summary>
+
+#### All inputs (18)
 
 | Name | Type | Default | Description |
 |---|---|---|---|
@@ -231,7 +278,10 @@ Algorithm reference: `ComfyUI-ZImagePowerNodes/zsampler_turbo_core.py` and `zsam
 - **`off`** (batch): stage 3 produces N **independent candidates** from the same stage 2 latent, each with `noise_seed = 696969 + i`.
 - **`chain`** (default, N serial refinements): slot `i` refines slot `i-1`'s output latent; the sigma sequence follows `_STAGE3_CHAIN_SIGMAS[min(i, 3)]` (4 sigma triplets indexed by slot).
 
-#### Outputs (7)
+> [!WARNING]
+> **Not thread-safe**: module-level `_PARTITION_CACHE` (shared with `ComfyUI-ZImageTurboProgressiveLockedUpscale`) will race between concurrent instances. **Run only one `ZImageTurboProgressive` instance at a time.**
+
+#### All outputs (7)
 
 | Name | Type | Description |
 |---|---|---|
@@ -250,6 +300,8 @@ Algorithm reference: `ComfyUI-ZImagePowerNodes/zsampler_turbo_core.py` and `zsam
 - `steps ∈ [16, 99]`: `extra = steps-9`; `n1 = int(0.4 + 0.6*extra)`, `n2 = extra - n1`; insert rules generate the schedule
 - Anything else: fall back to `alpha_8`
 - `_REFINE_ENTER_SIGMA = 0.658`: stage 3 sigma sequence is sliced from the first σ ≤ 0.658
+
+</details>
 
 ---
 

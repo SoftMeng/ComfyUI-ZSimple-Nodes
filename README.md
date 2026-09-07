@@ -22,10 +22,10 @@
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
-| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | INT 当前值 + STRING 当前值 + `next_int`（seed + 1）—— 可直接喂给下游需要字符串的输入 |
-| **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | PNG / JPEG / WebP / JXL 四格式；每格式独立质量参数；metadata 策略可控；自动续接 counter 防覆盖；4 个 STRING 输出可链式 |
-| **SaveTextPlus** | prompt / workflow 文本需要临时存档 | `txt` / `md` / `json` / `csv` 四格式；JSON 自动 pretty-print；返回完整路径与字节数 |
-| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | BRAVO/ALPHA hardcoded sigma preset；`stage_resolution_chain`（fast/quality/aggressive/none）尺寸链；`noise_strength`/`noise_bias_offset` 双旋钮；`creativity_mode` 4 档（off/lite/middle/high）；`stage_handoff_mode`（off/legacy/locked）；`stage3_chain_mode` 链式 refine；7 个 latent 输出 + 调试接口 |
+| **RandomNumberPlus** | 节点间 seed 传递格式不统一 | 每次给你一个新种子，同时输出数字版和文字版两种格式，下游节点不用再转类型 |
+| **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | 一个节点搞定 PNG/JPG/WebP/JXL 四种格式，每种格式独立调画质；自动编号，再也不覆盖旧图 |
+| **SaveTextPlus** | prompt / workflow 文本需要临时存档 | 把提示词和工作流 JSON 存到本地，再也不怕改坏了找不回上一版 |
+| **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | Z-Image Turbo 的三段式采样器：先粗画、再细化、最后出大图，全在一个节点里完成 |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -59,20 +59,24 @@ pip install -r requirements.txt
 
 ### 🎲 RandomNumberPlus（菜单：`ZSimple-Nodes`）
 
-**用途**：随机种子生成器，输出当前 seed（多种类型） + 下一值（seed + 1）。
+随机生成种子。每跑一次自动给你一个新的种子值，同时给你**数字版和文字版**两种格式（直接接到任何节点都行，不用手动转类型），外加**下一颗种子**方便连续抽卡。
 
-| 特性 | 说明 |
+**典型用法**：把数字版种子喂给 KSampler 复现同一张图；把文字版种子接到 SaveImagePlus 的"文件名前缀"，文件名里就自动带上种子号。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
 |---|---|
-| 多类型输出 | `int_out`（INT 当前 seed）+ `string_out`（STRING 当前 seed，可直接接到 `filename_prefix`）+ `number_out`（INT 同 int_out）+ `next_int`（seed + 1）|
-| 搜索别名 | `random` / `seed` / `rng` |
-| 控制后生成 | `randomize` / `increment` / `decrement` / `fixed` —— 由 ComfyUI 前端 widget 处理 |
-| 零依赖 | 仅依赖 ComfyUI V3 API |
+| `seed` | 种子值；前端自带"随机换一颗/加一/减一/锁定"按钮，不用你手动改 |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
 
 **输入**
 
 | 名称 | 类型 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|
-| `seed` | INT | 0 | 0 ~ 2⁶⁴-1 | 种子值；`control_after_generate=True` 启用前端控制按钮 |
+| `seed` | INT | 0 | 0 ~ 2⁶⁴-1 | 种子值；前端控制按钮由 `control_after_generate` 启用 |
 
 **输出**
 
@@ -83,15 +87,31 @@ pip install -r requirements.txt
 | `number_out` | INT | `seed` |
 | `next_int` | INT | `seed + 1` |
 
-**典型用法**：从 `int_out` / `next_int` 注入下一节点的 KSampler；从 `string_out` 注入 SaveTextPlus/SaveImagePlus 的 `filename_prefix`。
+**搜索别名**：`random` / `seed` / `rng`
+
+</details>
 
 ---
 
 ### 🖼️ SaveImagePlus（菜单：`ZSimple-Nodes/image`）
 
-**用途**：单节点保存图像到多种格式，精细控制压缩参数与 metadata 嵌入策略。
+一个节点搞定所有图片保存格式：PNG（无损）/ JPG（带压缩）/ WebP（更小）/ JXL（最新最强）。画质、是否压缩、是否把提示词一起存进图片，都可以在节点上调。文件自动按日期分子文件夹、自动编号，永远不会覆盖你之前的出图。
 
-#### 输入（11 项）
+**典型用法**：批量跑图时直接接在出图节点后面，挑格式和画质就行。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `format` | 保存格式：PNG / JPG / WebP / JXL（默认 PNG 无损） |
+| `quality` | JPG/WebP 的画质（默认 92 已经很高，肉眼几乎看不出差别） |
+| `filename_prefix` | 文件名前缀；自动按日期（`%date:yyyy-MM-dd%`）分子文件夹 |
+| `embed_metadata` | 是否把提示词和工作流一起存进图片（默认存全部；JPG 工作流很大时会自动改成只存 prompt） |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
 
 | 名称 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -134,13 +154,28 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 | `filename_first` | STRING | 本批第一张的文件名 |
 | `workflow_json` | STRING | 自动从 `extra_pnginfo` 导出 API workflow JSON；空字符串表示不可用 |
 
+</details>
+
 ---
 
 ### 📝 SaveTextPlus（菜单：`ZSimple-Nodes/text`）
 
-**用途**：保存任意文本到 `.txt` / `.md` / `.json` / `.csv`，单一职责字段，并暴露 `workflow_json` 输出。
+把提示词、工作流 JSON、或者任意多行文本存到本地 .txt / .md / .json / .csv 文件。JSON 格式会自动美化（带缩进），方便阅读。
 
-#### 输入（7 项）
+**典型用法**：在调试工作流时随时存档当前 prompt 和 workflow；想保留多份历史版本时改一下文件名前缀即可。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `text` | 要保存的内容（必填，多行） |
+| `format` | 保存格式：txt / md / json / csv（默认 txt） |
+| `filename_prefix` | 文件名前缀；自动按日期分子文件夹 |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
 
 | 名称 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -163,18 +198,30 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 > [!WARNING]
 > **文件名固定为 `<prefix>_00001.<ext>`，不会续接 counter**（与 SaveImagePlus 行为不同）。重复保存会**覆盖同名文件**——若需保留多份，请先切换 `filename_prefix`。
 
+</details>
+
 ---
 
 ### 🎯 ZImageTurboProgressive（菜单：`ZSimple-Nodes/sampling`）
 
-**用途**：Z-Image Turbo 专用 3 阶段 progressive sampling。Sigma 序列来自 **BRAVO/ALPHA hardcoded preset**（每 stage 独立、不连续 sigma），尺寸链由 `stage_resolution_chain` 四档控制，初始噪声由 `noise_strength`（overdose + bias level）+ `noise_bias_offset`（额外 probe 触发）双旋钮驱动。
+Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速铺结构）→ 再放大细化 → 最后到目标分辨率出大图。一个节点完成，不用手动串三个 KSampler。
 
-算法参考 `ComfyUI-ZImagePowerNodes/zsampler_turbo_core.py` 与 `zsampler_turbo_X21.py`。
+**典型用法**：想要"先快后精"就用 `quality` 档；想要创意多一些就把 `creativity_mode` 调到 `middle` 或 `high`；想要一次出多张候选就选 `stage3_count=4`。
 
-> [!WARNING]
-> **不线程安全**：模块级 `_PARTITION_CACHE`（与 `ComfyUI-ZImageTurboProgressiveLockedUpscale` 共享）会在并发实例间竞争。**同时只跑一个 `ZImageTurboProgressive` 实例**。
+#### 关键旋钮
 
-#### 输入（18 项）
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `steps` | 画几步（默认 8 步，质量与速度的平衡点） |
+| `creativity_mode` | 让模型多想还是少想：`off`=纯模板不走样 / `lite`=轻微变化（默认）/ `middle`=原版 X21（带点发挥）/ `high`=大胆发挥 |
+| `stage_resolution_chain` | 跑多快 vs 跑多细：`fast`=快速草稿（首段 1/4 尺寸）/ `quality`=质量优先（默认，首段 1/2）/ `aggressive`=激进三段渐进 / `none`=不缩放 |
+| `stage_handoff_mode` | 阶段之间怎么衔接：`off`=完全独立 / `legacy`=标准接力（默认）/ `locked`=紧咬上一步（实验性） |
+| `stage3_count` | 最后阶段出几张候选图（1-4 张，可链式细化） |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 全部输入（18 项）
 
 | 名称 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -231,7 +278,10 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 - **`off`**（batch）：stage3 跑 N 个**独立候选**，从同一 stage2 latent 出发，noise_seed = `696969 + i`，每个 slot 独立 noise。
 - **`chain`**（默认，N 次串行 refine）：slot `i` 接力 slot `i-1` 的输出 latent，sigma 序列走 `_STAGE3_CHAIN_SIGMAS[min(i, 3)]`（4 个 sigma 三元组按 slot 索引选取）。
 
-#### 输出（7 项）
+> [!WARNING]
+> **不线程安全**：模块级 `_PARTITION_CACHE`（与 `ComfyUI-ZImageTurboProgressiveLockedUpscale` 共享）会在并发实例间竞争。**同时只跑一个 `ZImageTurboProgressive` 实例**。
+
+#### 全部输出（7 项）
 
 | 名称 | 类型 | 说明 |
 |---|---|---|
@@ -250,6 +300,10 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 - `steps ∈ [16, 99]`：`extra = steps-9`；`n1 = int(0.4 + 0.6*extra)`，`n2 = extra - n1`，按插入规则生成
 - 其它：回落 `alpha_8`
 - `_REFINE_ENTER_SIGMA = 0.658`：stage3 σ 序列从 ≤ 0.658 处切片开始
+
+</details>
+
+---
 
 ---
 
