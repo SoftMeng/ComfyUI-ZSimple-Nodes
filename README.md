@@ -45,7 +45,7 @@
 
 ```bash
 cd ComfyUI/custom_nodes/
-git clone https://github.com/your-username/ComfyUI-ZSimple-Nodes.git
+git clone https://github.com/SoftMeng/ComfyUI-ZSimple-Nodes.git
 cd ComfyUI-ZSimple-Nodes
 pip install -r requirements.txt
 ```
@@ -302,8 +302,6 @@ Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速�
 - `_REFINE_ENTER_SIGMA = 0.658`：stage3 σ 序列从 ≤ 0.658 处切片开始
 
 </details>
-
----
 
 ---
 
