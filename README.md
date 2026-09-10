@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-V3%20Schema-blue?style=for-the-badge)](https://github.com/comfyanonymous/ComfyUI)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=for-the-badge)](https://www.python.org/)
-[![Nodes](https://img.shields.io/badge/Nodes-4-orange?style=for-the-badge)](#-节点列表)
+[![Nodes](https://img.shields.io/badge/Nodes-7-orange?style=for-the-badge)](#-节点列表)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen?style=for-the-badge)](../../pulls)
 
 **为 ComfyUI 工作流添砖加瓦 · 单文件单节点 · 现代压缩与质量参数**
@@ -18,14 +18,17 @@
 
 ---
 
-## ✨ 四个节点，各自解决一个具体痛点
+## ✨ 七个节点，各自解决一个具体痛点
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
 | **RandomNumberPlus** | 节点间 seed 传递格式不统一 | 每次给你一个新种子，同时输出数字版和文字版两种格式，下游节点不用再转类型 |
 | **SaveImagePlus** | 同一节点只能写死 PNG / 固定压缩 | 一个节点搞定 PNG/JPG/WebP/JXL 四种格式，每种格式独立调画质；自动编号，再也不覆盖旧图 |
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | 把提示词和工作流 JSON 存到本地，再也不怕改坏了找不回上一版 |
+| **SaveVideoPlus** | 视频帧序列需要保存为 mp4/webm/gif | mp4(libx264) / webm(libvpx-vp9 恒定质量) / gif(PIL) 三格式；frame_rate / quality / loop_count / pingpong / metadata embed；STRING 输出文件名+帧数；客户端进程 try/finally 清理 |
 | **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | Z-Image Turbo 的三段式采样器：先粗画、再细化、最后出大图，全在一个节点里完成 |
+| **ZSimpleAnthropicAgent** | 短 prompt 扩写 / 文案润色需要写规则、调 API | 通过本地 Anthropic 代理调用 Claude Messages API；system prompt 从 markdown 文件下拉选择；STRING → STRING；API 失败直接 raise |
+| **ZSimpleOpenAIAgent** | 短 prompt 需要调用 OpenAI 兼容 API（默认 Qwen）扩写 | 节点参数全自包含（model/api_key/base_url/temperature/max_tokens）；默认指向阿里云 DashScope Qwen；STRING → STRING；空 api_key 或 API 失败直接 raise |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -202,6 +205,74 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 
 ---
 
+### 🎬 SaveVideoPlus（菜单：`ZSimple-Nodes/video`）
+
+把 ComfyUI IMAGE 帧序列编码为 mp4 / webm / gif 视频保存到 output/。mp4(libx264) 兼容性最广、webm(libvpx-vp9) 开源高压缩、gif 走 PIL 无 ffmpeg 依赖。三格式统一参数 + 自动续接编号 + 客户端进程 try/finally 清理。
+
+**典型用法**：把 KSampler/VHS 视频工作流末尾的 IMAGE 张量接进来，配置 fps 与 quality 出 mp4；或做 gif 表情包接 `loop_count`；webm 适合上传开源视频平台。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `format` | mp4 / webm / gif 三选一；默认 mp4 |
+| `frame_rate` | 输出视频帧率（fps）；默认 24 |
+| `quality` | mp4=webm 的 CRF 反向参数（1=低质大文件，100=高质小文件）；gif 忽略此字段 |
+| `loop_count` | 仅 gif 生效；0=无限循环（与 PIL 语义一致），1=播放 1 遍停 |
+| `pingpong` | on 时追加反向帧（去首尾）制造无缝循环播放 |
+| `embed_metadata` | 仅 mp4 生效；写 prompt / workflow 到容器 metadata；workflow 超 60KB 自动截断只留 prompt |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `images` | IMAGE (force_input) | — | ComfyUI IMAGE tensor 批；支持 3 通道(RGB) / 4 通道(RGBA) / 2 维灰度 |
+| `format` | COMBO | `mp4` | `mp4` / `webm` / `gif` |
+| `frame_rate` | FLOAT (1.0–120.0) | 24.0 | 输出视频帧率（fps） |
+| `filename_prefix` | STRING | `ZSimple` | — |
+| `subfolder_template` | STRING | `%date:yyyy-MM-dd%` | output/ 下子目录模板，支持 `%date%`/`%width%`/`%height%` |
+| `filename_number_padding` | INT (1–9) | 5 | 文件计数器零填充宽度（5 → 00001） |
+| `quality` | INT (1–100) | 90 | mp4=webm 的 CRF 反向参数 |
+| `loop_count` | INT (0–100) | 0 | 仅 gif；0=无限循环 |
+| `pingpong` | COMBO (`off`/`on`) | `off` | on 时追加反向帧制造无缝循环 |
+| `embed_metadata` | COMBO (`none` /`prompt_only`/`all`) | `all` | 仅 mp4；workflow 超 60KB 自动截断 |
+
+#### 输出
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `images` | IMAGE | 原图透传 |
+| `paths` | STRING | 保存文件的相对路径 |
+| `filename_first` | STRING | 保存的文件名 |
+| `frame_count` | INT | 实际编码的帧数（含 pingpong 附加帧） |
+| `workflow_json` | STRING | extra_pnginfo workflow JSON；不可用时为空字符串 |
+
+#### ⚠️ 重要约束
+
+- **API 失败 / 包缺失 / 空 images / 编码异常** 全部 raise（workflow 红条失败，不静默降级）
+- **mp4 metadata 写入 prompt + workflow**：与 SaveImagePlus 同等风险面，分享 workflow 等于分享提示词内容（开源插件通用行为，与 VHS 一致）
+- **编码中途若遇磁盘满 / ffmpeg 崩溃**：try/finally 保证 ffmpeg 子进程被 close，不会泄漏
+- **frame_count 含 pingpong 帧**：若 pingpong=on 启用，frame_count = 原始帧数 × 2 − 2
+
+#### 三种格式的取舍
+
+| 格式 | 编码器 | 体积 | 兼容性 | 适用场景 |
+|---|---|---|---|---|
+| mp4 | libx264（h264） | 中 | 极广（几乎所有播放器 / 平台） | 通用默认 |
+| webm | libvpx-vp9（CRF 恒定质量） | 较小 | 较好（YouTube / Web 主流） | 开源平台、追求体积 |
+| gif | PIL（256 色 palette） | 较大 | 极广 | 短小动图、表情包 |
+
+#### 搜索别名
+
+`save` / `save video` / `export` / `mp4` / `webm` / `gif`
+
+</details>
+
+---
+
 ### 🎯 ZImageTurboProgressive（菜单：`ZSimple-Nodes/sampling`）
 
 Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速铺结构）→ 再放大细化 → 最后到目标分辨率出大图。一个节点完成，不用手动串三个 KSampler。
@@ -305,6 +376,170 @@ Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速�
 
 ---
 
+### 🤖 ZSimpleOpenAIAgent（菜单：`ZSimple-Nodes/agent`）
+
+通过 OpenAI 兼容 Chat Completions API（默认指向阿里云 DashScope Qwen）把一段简短 prompt 扩展成更完整、更结构化的输出。**STRING → STRING**：输入文本 → 输出扩展后的文本。所有连接信息都在节点 UI 上，零环境变量配置 — 跨平台复制 workflow 即可直接跑。
+
+**典型用法**：用国内 API（DashScope / DeepSeek / 月之暗面 等 OpenAI 兼容端点）做 prompt 扩写；切换 base_url 也能直连 OpenAI 官方。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `model` | OpenAI 兼容模型名，默认 `qwen3.5-flash` |
+| `api_key` | API key（必填，空字符串时节点会拒绝执行） |
+| `base_url` | OpenAI 兼容 base url，默认指向阿里云 DashScope |
+| `system_prompt` | 从 `system_prompt/` 目录下的 markdown 文件下拉选择；选 `none` 时改用下面的 `prompt_enhancement_text` |
+| `temperature` | 采样温度，默认 0.7 |
+| `max_tokens` | 最大生成 token，默认 4096 |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `text` | STRING (multiline, force_input) | — | 用户输入文本（user message content） |
+| `system_prompt` | COMBO | `none` | `system_prompt/` 下所有 `.md` 文件名（不含扩展名），首项固定 `none` |
+| `prompt_enhancement_text` | STRING (multiline) | `""` | 仅 `system_prompt=none` 时生效：作为 system 字段发送；空时省略 system 字段 |
+| `model` | COMBO | `qwen3.5-flash` | `qwen3.5-flash` / `qwen-plus` / `qwen-max` / `qwen-turbo` |
+| `api_key` | STRING | `""` | API key；**空字符串 → RuntimeError** |
+| `base_url` | STRING | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI 兼容 base url |
+| `temperature` | FLOAT (0.0–2.0) | 0.7 | 采样温度；0=确定性，1=默认，2=最大多样性 |
+| `max_tokens` | INT (1–8192) | 4096 | 最大生成 token 数 |
+
+#### 输出
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `output_text` | STRING | 模型返回的文本内容 |
+| `model_used` | STRING | SDK 响应中读取的实际模型名（调试用） |
+
+#### 三种 system 模式
+
+| `system_prompt` 取值 | `prompt_enhancement_text` | 实际请求中的 `system` 消息 |
+|---|---|---|
+| `foo`（任一 md 文件名） | 任意 | 读取 `system_prompt/foo.md` 文件内容 |
+| `none` | 非空 | `prompt_enhancement_text` 原样 |
+| `none` | 空（仅空白） | **完全省略** system 消息 |
+
+#### 客户端缓存
+
+按 `(api_key, base_url)` 缓存 SDK client：
+
+- 同一组 key + url → 复用 client（省去每次新建 HTTP 连接）
+- 改了 key 或 url → 自动重建
+- `model` 不影响 client 身份，所以切换模型不会触发重建
+
+> [!WARNING]
+> **API key 会写入 workflow JSON**。ComfyUI 把所有节点参数原样序列化到 `.json` workflow 文件里，分享 workflow 等于分享你的 API key。**分享前请先清空 `api_key` 字段**（或用文本编辑器手动替换）。
+>
+> 隐私优先的用户：考虑自建一个 wrapper 节点（不在本仓库）来从本地文件读 key，再传给本节点的 `api_key` 输入。
+
+> [!WARNING]
+> **未安装 `openai` SDK** 时，节点首次执行会抛出 `RuntimeError("请运行 pip install openai")`，**不**会让 ComfyUI 启动崩溃。
+>
+> **API key 空字符串** 时立即 `RuntimeError("api_key 为空...")`，不静默调用。
+>
+> **API 调用失败**（网络、token、超时）一律直接 `raise`，让 ComfyUI workflow 红条失败；不静默降级。
+
+#### 切换到 OpenAI 官方 / 其他兼容端点
+
+只需改 `base_url`：
+
+| 端点 | base_url |
+|---|---|
+| 阿里云 DashScope（默认） | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| OpenAI 官方 | `https://api.openai.com/v1` |
+| DeepSeek | `https://api.deepseek.com/v1` |
+| 自建 / 第三方代理 | 你的 URL |
+
+model 字段填对应端点支持的模型名即可。
+
+#### 搜索别名
+
+`openai` / `qwen` / `dashscope` / `llm` / `prompt enhancer` / `prompt expander`
+
+</details>
+
+---
+
+### 🤖 ZSimpleAnthropicAgent（菜单：`ZSimple-Nodes/agent`）
+
+通过本地 Anthropic 代理调用 Claude Messages API，把一段简短 prompt 扩展成更完整、更结构化的输出。**STRING → STRING**：输入文本 → 输出扩展后的文本。API 失败直接 raise，workflow 红条失败（不静默）。
+
+**典型用法**：在写图 prompt / 写工作流注释时，先让 Claude 帮你把一段口语化描述扩写成正式 prompt；也可以用作"文案润色""指令改写"等通用 LLM 节点。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `system_prompt` | 从 `system_prompt/` 目录下的 markdown 文件下拉选择，作为 Claude 的 system 指令；选 `none` 时改用下面的 `prompt_enhancement_text` |
+| `prompt_enhancement_text` | 仅当 `system_prompt=none` 时生效：作为 system 字段发送；留空 → 完全省略 system |
+| `model` | Claude 模型名，默认 `claude-sonnet-4-6` |
+| `max_tokens` | 最大生成 token，默认 1024 |
+| `temperature` | 采样温度，默认 1.0 |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `text` | STRING (multiline, force_input) | — | 用户输入文本（user message content） |
+| `system_prompt` | COMBO | `none` | `system_prompt/` 下所有 `.md` 文件名（不含扩展名），首项固定 `none` |
+| `prompt_enhancement_text` | STRING (multiline) | `""` | 仅 `system_prompt=none` 时生效：作为 system 字段发送；空时省略 system 字段 |
+| `model` | COMBO | `claude-sonnet-4-6` | `claude-sonnet-4-6` / `claude-3-5-sonnet-latest` / `claude-opus-4-6` |
+| `max_tokens` | INT (1–8192) | 1024 | 最大生成 token 数 |
+| `temperature` | FLOAT (0.0–2.0) | 1.0 | 采样温度；0=确定性，1=默认，2=最大多样性 |
+
+#### 输出
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `output_text` | STRING | 模型返回的文本内容 |
+| `model_used` | STRING | SDK 响应中读取的实际模型名（调试用） |
+
+#### `system_prompt/` 目录
+
+- 节点扫描 `<plugin>/system_prompt/*.md`，把文件名（不含 `.md`）作为下拉选项。
+- 首项固定为 `none`，代表"不使用 system prompt"。
+- 插件自带两个示例：
+  - `prompt_enhancer.md` — 通用 prompt 扩写（中文风格）
+  - `image_prompt_expander.md` — 图像生成 prompt 扩写（输出英文、可直接喂 SD/Flux）
+- **新增 / 修改 markdown 文件后重启 ComfyUI** 才会刷新下拉（COMBO 选项在节点注册时静态确定）。
+
+#### 三种 system 模式
+
+| `system_prompt` 取值 | `prompt_enhancement_text` | 实际请求中的 `system` 字段 |
+|---|---|---|
+| `foo`（任一 md 文件名） | 任意 | 读取 `system_prompt/foo.md` 文件内容 |
+| `none` | 非空 | `prompt_enhancement_text` 原样 |
+| `none` | 空（仅空白） | **完全省略** system 字段（让 Claude 自由发挥） |
+
+#### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `ANTHROPIC_BASE_URL` | `http://127.0.0.1:5000` | Claude API base url（指向本地代理） |
+| `ANTHROPIC_AUTH_TOKEN` | `PROXY_MANAGED` | API key；`PROXY_MANAGED` 表示由本地代理管理真实 token |
+
+> [!WARNING]
+> **未安装 `anthropic` SDK** 时，节点首次执行会抛出 `RuntimeError("请运行 pip install anthropic")`，**不**会让 ComfyUI 启动崩溃。
+
+> [!WARNING]
+> **API 调用失败**（代理 5000 端口不通、token 无效、超时、模型返回错误）一律直接 `raise`，让 ComfyUI workflow 红条失败；不静默降级。
+
+#### 搜索别名
+
+`anthropic` / `claude` / `llm` / `prompt enhancer` / `prompt expander`
+
+</details>
+
+---
+
 ## 🛠️ 添加新节点
 
 本插件遵循"**单文件单节点**"的单一职责原则。
@@ -328,10 +563,13 @@ touch nodes/my_new_node.py
 ## 📋 依赖
 
 > [!NOTE]
-> ComfyUI 内置依赖（`comfy_api`、`Pillow`、`numpy`）不需要在 `requirements.txt` 中声明。本插件仅在以下情况有外部依赖：
+> ComfyUI 内置依赖（`comfy_api`、`Pillow`、`numpy`）不需要在 `requirements.txt` 中声明。本插件的外部依赖：
 
 | 类型 | 包名 | 必需 | 说明 |
 |---|---|---|---|
+| 必需 | `anthropic` | ✅ | `ZSimpleAnthropicAgent` 节点需要；安装：`pip install anthropic>=0.40.0` |
+| 必需 | `openai` | ✅ | `ZSimpleOpenAIAgent` 节点需要；安装：`pip install openai>=1.0.0` |
+| 必需 | `imageio-ffmpeg` | ✅ | `SaveVideoPlus` 节点需要（mp4/webm 编码；gif 不需要）；安装：`pip install imageio-ffmpeg>=0.5.0` |
 | 可选 | `pillow-jxl-plugin` | ❌ | 启用 `SaveImagePlus` 的 `format="jxl"` 时需 `pip install pillow-jxl-plugin` |
 
 完整声明见 [`requirements.txt`](requirements.txt)（默认仅含注释示例）。
@@ -344,7 +582,13 @@ touch nodes/my_new_node.py
 python -m pytest tests/
 ```
 
-目前仅有一个测试文件 `tests/test_zimage_turbo_progressive.py`。
+> [!NOTE]
+> 由于本插件的 `__init__.py` 一次性 import 全部 5 个节点（其中部分依赖 ComfyUI runtime 的 `comfy.*` 模块），**独立 pytest 环境**（无 ComfyUI 安装）下 `pytest` 会因 `ModuleNotFoundError: No module named 'comfy.*'` 失败。
+>
+> 推荐两种运行方式：
+>
+> - **各节点单测（推荐）**：在 plugin 根目录直接执行 `python tests/test_z_simple_anthropic_agent.py` / `python tests/test_z_simple_openai_agent.py` / `python tests/test_save_video_plus.py`（自带 comfy_api stub，无需 ComfyUI 安装）。
+> - **完整 pytest 套件**：在 **ComfyUI 实际 runtime**（`comfy` 已装）下 `python -m pytest tests/` 可跑通。
 
 ---
 
