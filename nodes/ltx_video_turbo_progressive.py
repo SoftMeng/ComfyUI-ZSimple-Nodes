@@ -203,19 +203,22 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
 
     def _sample(self, model, positive, negative, av_latent, sigmas_list, sampler_obj,
                 seed, cfg_video, cfg_audio):
-        # LTX2.5 needs an AV dual-CFG Guider — single CFG (sample_custom) leaves
-        # the audio DiT unconditioned. The Guider routes positive+negative into
-        # both video and audio DiT streams at the configured cfg scales.
-        from comfy_extras.nodes_lt import LTXVDualCFGGuider
+        # Match the native distilled path: a plain CFGGuider with cfg=1.
+        # LTXVDualCFGGuider is for dev models (cfg 3/7); its AV-split predict_noise
+        # leaves the audio stream unconditioned under distilled cfg=1, breaking
+        # speech content following. The single cfg (video_cfg == audio_cfg == 1.0)
+        # routes the same conditioning through both DiT streams identically.
+        import comfy.samplers
         sigmas = torch.tensor(sigmas_list, dtype=torch.float32)
         device = comfy.model_management.get_torch_device()
         x0 = av_latent["samples"].to(device)
         eps = comfy.sample.prepare_noise(x0, seed, None)
         import latent_preview as _lp
         callback = _lp.prepare_callback(model, max(1, len(sigmas) - 1))
-        guider = LTXVDualCFGGuider.execute(
-            model, positive, negative, cfg_video, cfg_audio
-        )[0]
+        cfg = max(cfg_video, cfg_audio)
+        guider = comfy.samplers.CFGGuider(model)
+        guider.set_conds(positive, negative)
+        guider.set_cfg(cfg)
         samples = guider.sample(
             eps, x0, sampler_obj, sigmas,
             callback=callback,
