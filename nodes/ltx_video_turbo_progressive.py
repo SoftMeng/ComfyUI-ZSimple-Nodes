@@ -203,19 +203,22 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
 
     def _sample(self, model, positive, negative, av_latent, sigmas_list, sampler_obj,
                 seed, cfg_video, cfg_audio):
-        # V3 schema passes sampler_s1/sampler_s2 as KSAMPLER objects (sockets),
-        # not strings. Pass directly to comfy.sample.sample_custom.
+        # LTX2.5 needs an AV dual-CFG Guider — single CFG (sample_custom) leaves
+        # the audio DiT unconditioned. The Guider routes positive+negative into
+        # both video and audio DiT streams at the configured cfg scales.
+        from comfy_extras.nodes_lt import LTXVDualCFGGuider
         sigmas = torch.tensor(sigmas_list, dtype=torch.float32)
         device = comfy.model_management.get_torch_device()
         x0 = av_latent["samples"].to(device)
         eps = comfy.sample.prepare_noise(x0, seed, None)
         import latent_preview as _lp
         callback = _lp.prepare_callback(model, max(1, len(sigmas) - 1))
-        cfg = cfg_video if cfg_video == cfg_audio else cfg_video
-        samples = comfy.sample.sample_custom(
-            model, eps, cfg, sampler_obj, sigmas,
-            positive, negative, x0,
-            noise_mask=None, callback=callback,
+        guider = LTXVDualCFGGuider.execute(
+            model, positive, negative, cfg_video, cfg_audio
+        )[0]
+        samples = guider.sample(
+            eps, x0, sampler_obj, sigmas,
+            callback=callback,
             disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
             seed=seed,
         )
@@ -264,6 +267,19 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
             "[ZLTXVideoTurboProgressive] start stages=%s s1=%d s2=%d scaling=%s",
             stages, steps_s1, steps_s2, latent_scaling,
         )
+
+        # LTXV audio DiT reads frame_rate from conditioning metadata to align
+        # audio duration (num_of_latents_from_frames). Missing frame_rate breaks
+        # speech timing. Wire CLIPTextEncode -> LTXVConditioning -> this node.
+        try:
+            if "frame_rate" not in positive_cond[0][1]:
+                logger.warning(
+                    "[ZLTXVideoTurboProgressive] positive_cond has no frame_rate; "
+                    "audio timing may drift. Fix: insert LTXVConditioning between "
+                    "CLIPTextEncode and this node."
+                )
+        except (TypeError, IndexError, KeyError):
+            pass
 
         scale_factor_s1, _ = _LATENT_SCALING_VIDEO[latent_scaling]
 

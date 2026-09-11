@@ -140,108 +140,6 @@
       }
     },
     {
-      "id": 9,
-      "type": "ZLTXVideoTurboProgressive",
-      "pos": [
-        1400,
-        40
-      ],
-      "size": [
-        400,
-        540
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 10
-        },
-        {
-          "name": "vae_video",
-          "type": "VAE",
-          "link": 9
-        },
-        {
-          "name": "positive_cond",
-          "type": "CONDITIONING",
-          "link": 16
-        },
-        {
-          "name": "negative_cond",
-          "type": "CONDITIONING",
-          "link": 17
-        },
-        {
-          "name": "video_latent",
-          "type": "LATENT",
-          "link": 11
-        },
-        {
-          "name": "latent_upscale_model",
-          "type": "LATENT_UPSCALE_MODEL",
-          "link": 12
-        },
-        {
-          "name": "sampler_s1",
-          "type": "SAMPLER",
-          "link": 13
-        },
-        {
-          "name": "sampler_s2",
-          "type": "SAMPLER",
-          "link": 15
-        },
-        {
-          "name": "audio_latent",
-          "shape": 7,
-          "type": "LATENT",
-          "link": 25
-        }
-      ],
-      "outputs": [
-        {
-          "name": "latent_video",
-          "type": "LATENT",
-          "links": [
-            18
-          ]
-        },
-        {
-          "name": "latent_audio",
-          "type": "LATENT",
-          "links": [
-            23
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "ZLTXVideoTurboProgressive"
-      },
-      "widgets_values": [
-        844376668616591,
-        "randomize",
-        8,
-        3,
-        1,
-        1,
-        "quality",
-        "auto_2stage"
-      ],
-      "widgets_values_named": {
-        "seed": 844376668616591,
-        "control_after_generate": "randomize",
-        "steps_s1": 8,
-        "steps_s2": 3,
-        "video_cfg": 1,
-        "audio_cfg": 1,
-        "latent_scaling": "quality",
-        "stages": "auto_2stage"
-      }
-    },
-    {
       "id": 2,
       "type": "VAELoader",
       "pos": [
@@ -373,52 +271,6 @@
       ],
       "widgets_values_named": {
         "model_name": "ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"
-      }
-    },
-    {
-      "id": 20,
-      "type": "LTXVEmptyLatentAudio",
-      "pos": [
-        39.61383755045584,
-        699.6969123589765
-      ],
-      "size": [
-        270,
-        106
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "audio_vae",
-          "type": "VAE",
-          "link": 26
-        }
-      ],
-      "outputs": [
-        {
-          "name": "Latent",
-          "type": "LATENT",
-          "slot_index": 0,
-          "links": [
-            25
-          ]
-        }
-      ],
-      "title": "Empty LTXV Latent Audio",
-      "properties": {
-        "Node name for S&R": "LTXVEmptyLatentAudio"
-      },
-      "widgets_values": [
-        121,
-        24,
-        1
-      ],
-      "widgets_values_named": {
-        "frames_number": 121,
-        "frame_rate": 24,
-        "batch_size": 1
       }
     },
     {
@@ -570,88 +422,6 @@
       }
     },
     {
-      "id": 8,
-      "type": "CLIPTextEncode",
-      "pos": [
-        464.1472282069225,
-        1221.036992318621
-      ],
-      "size": [
-        420,
-        220
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 19
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            17
-          ]
-        }
-      ],
-      "title": "Negative Prompt",
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "worst quality, low quality, blurry, jpeg artifacts, watermark, text, logo, cartoon, 3d render, video game, deformed hands, extra fingers, static camera, center locked frame, camera push-in, jitter, flicker,\nblurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, unreadable text on shirt or hat, incorrect lettering on cap (“PNTR”), incorrect t-shirt slogan (“JUST DO IT”), missing microphone, misplaced microphone, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, smiling, laughing, exaggerated sadness, wrong gaze direction, eyes looking at camera, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, missing sniff sounds, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, missing door or shelves, missing shallow depth of field, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.\n"
-      ],
-      "widgets_values_named": {
-        "text": "worst quality, low quality, blurry, jpeg artifacts, watermark, text, logo, cartoon, 3d render, video game, deformed hands, extra fingers, static camera, center locked frame, camera push-in, jitter, flicker,\nblurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, unreadable text on shirt or hat, incorrect lettering on cap (“PNTR”), incorrect t-shirt slogan (“JUST DO IT”), missing microphone, misplaced microphone, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, smiling, laughing, exaggerated sadness, wrong gaze direction, eyes looking at camera, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, missing sniff sounds, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, missing door or shelves, missing shallow depth of field, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts.\n"
-      }
-    },
-    {
-      "id": 7,
-      "type": "CLIPTextEncode",
-      "pos": [
-        464.1472282069225,
-        941.0369923186221
-      ],
-      "size": [
-        420,
-        220
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 20
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            16
-          ]
-        }
-      ],
-      "title": "Positive Prompt",
-      "properties": {
-        "Node name for S&R": "CLIPTextEncode"
-      },
-      "widgets_values": [
-        "Temporal Action\tDescribes ordered actions over time (Chronological)\tFirst steps onto the rain-slicked balcony, pauses, then looks toward the horizon as lightning strikes"
-      ],
-      "widgets_values_named": {
-        "text": "Temporal Action\tDescribes ordered actions over time (Chronological)\tFirst steps onto the rain-slicked balcony, pauses, then looks toward the horizon as lightning strikes"
-      }
-    },
-    {
       "id": 3,
       "type": "EmptyLTXVLatentVideo",
       "pos": [
@@ -692,6 +462,149 @@
       }
     },
     {
+      "id": 9,
+      "type": "ZLTXVideoTurboProgressive",
+      "pos": [
+        1400,
+        40
+      ],
+      "size": [
+        400,
+        540
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 10
+        },
+        {
+          "name": "vae_video",
+          "type": "VAE",
+          "link": 9
+        },
+        {
+          "name": "positive_cond",
+          "type": "CONDITIONING",
+          "link": 16
+        },
+        {
+          "name": "negative_cond",
+          "type": "CONDITIONING",
+          "link": 17
+        },
+        {
+          "name": "video_latent",
+          "type": "LATENT",
+          "link": 11
+        },
+        {
+          "name": "latent_upscale_model",
+          "type": "LATENT_UPSCALE_MODEL",
+          "link": 12
+        },
+        {
+          "name": "sampler_s1",
+          "type": "SAMPLER",
+          "link": 13
+        },
+        {
+          "name": "sampler_s2",
+          "type": "SAMPLER",
+          "link": 15
+        },
+        {
+          "name": "audio_latent",
+          "shape": 7,
+          "type": "LATENT",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "latent_video",
+          "type": "LATENT",
+          "links": [
+            18
+          ]
+        },
+        {
+          "name": "latent_audio",
+          "type": "LATENT",
+          "links": [
+            23
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "ZLTXVideoTurboProgressive"
+      },
+      "widgets_values": [
+        438488207981135,
+        "randomize",
+        8,
+        3,
+        1,
+        1,
+        "quality",
+        "auto_2stage"
+      ],
+      "widgets_values_named": {
+        "seed": 438488207981135,
+        "control_after_generate": "randomize",
+        "steps_s1": 8,
+        "steps_s2": 3,
+        "video_cfg": 1,
+        "audio_cfg": 1,
+        "latent_scaling": "quality",
+        "stages": "auto_2stage"
+      }
+    },
+    {
+      "id": 8,
+      "type": "CLIPTextEncode",
+      "pos": [
+        464.1472282069225,
+        1221.036992318621
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 19
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            17
+          ]
+        }
+      ],
+      "title": "Negative Prompt",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, unreadable text on shirt or hat, incorrect lettering on cap (“PNTR”), incorrect t-shirt slogan (“JUST DO IT”), missing microphone, misplaced microphone, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, smiling, laughing, exaggerated sadness, wrong gaze direction, eyes looking at camera, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, missing sniff sounds, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, missing door or shelves, missing shallow depth of field, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts."
+      ],
+      "widgets_values_named": {
+        "text": "blurry, out of focus, overexposed, underexposed, low contrast, washed out colors, excessive noise, grainy texture, poor lighting, flickering, motion blur, distorted proportions, unnatural skin tones, deformed facial features, asymmetrical face, missing facial features, extra limbs, disfigured hands, wrong hand count, artifacts around text, unreadable text on shirt or hat, incorrect lettering on cap (“PNTR”), incorrect t-shirt slogan (“JUST DO IT”), missing microphone, misplaced microphone, inconsistent perspective, camera shake, incorrect depth of field, background too sharp, background clutter, distracting reflections, harsh shadows, inconsistent lighting direction, color banding, cartoonish rendering, 3D CGI look, unrealistic materials, uncanny valley effect, incorrect ethnicity, wrong gender, exaggerated expressions, smiling, laughing, exaggerated sadness, wrong gaze direction, eyes looking at camera, mismatched lip sync, silent or muted audio, distorted voice, robotic voice, echo, background noise, off-sync audio, missing sniff sounds, incorrect dialogue, added dialogue, repetitive speech, jittery movement, awkward pauses, incorrect timing, unnatural transitions, inconsistent framing, tilted camera, missing door or shelves, missing shallow depth of field, flat lighting, inconsistent tone, cinematic oversaturation, stylized filters, or AI artifacts."
+      }
+    },
+    {
       "id": 16,
       "type": "SaveVideo",
       "pos": [
@@ -700,7 +613,7 @@
       ],
       "size": [
         210,
-        518
+        491.75
       ],
       "flags": {},
       "order": 15,
@@ -733,6 +646,93 @@
         "format": "auto",
         "format.codec": "auto",
         "codec": "auto"
+      }
+    },
+    {
+      "id": 20,
+      "type": "LTXVEmptyLatentAudio",
+      "pos": [
+        39.61383755045584,
+        699.6969123589765
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "audio_vae",
+          "type": "VAE",
+          "link": 26
+        }
+      ],
+      "outputs": [
+        {
+          "name": "Latent",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            25
+          ]
+        }
+      ],
+      "title": "Empty LTXV Latent Audio",
+      "properties": {
+        "Node name for S&R": "LTXVEmptyLatentAudio"
+      },
+      "widgets_values": [
+        121,
+        24,
+        1
+      ],
+      "widgets_values_named": {
+        "frames_number": 121,
+        "frame_rate": 24,
+        "batch_size": 1
+      }
+    },
+    {
+      "id": 7,
+      "type": "CLIPTextEncode",
+      "pos": [
+        464.1472282069225,
+        941.0369923186221
+      ],
+      "size": [
+        420,
+        220
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 20
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            16
+          ]
+        }
+      ],
+      "title": "Positive Prompt",
+      "properties": {
+        "Node name for S&R": "CLIPTextEncode"
+      },
+      "widgets_values": [
+        "Style: realistic, cinematic - A young woman glances up, briefly startled, then\nsmiles and speaks in a soft, gentle, coquettish voice: \"Hello, my name is Li Lei.\"\nShe speaks clearly, with a warm playful tone. Ambient room tone is quiet."
+      ],
+      "widgets_values_named": {
+        "text": "Style: realistic, cinematic - A young woman glances up, briefly startled, then\nsmiles and speaks in a soft, gentle, coquettish voice: \"Hello, my name is Li Lei.\"\nShe speaks clearly, with a warm playful tone. Ambient room tone is quiet."
       }
     }
   ],
@@ -943,10 +943,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.5502046887296462,
+      "scale": 0.6052251576026111,
       "offset": [
-        139.0993016399383,
-        157.10116416520987
+        13.569273574260539,
+        -291.14335127628163
       ]
     },
     "frontendVersion": "1.51.9",
