@@ -288,6 +288,8 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
 
         if stages == "stage2_only":
             v_in = video_latent
+        elif scale_factor_s1 == 1.0:
+            v_in = video_latent
         else:
             v_in = _adjust_video_latent_size(video_latent, scale_factor_s1)
 
