@@ -7,7 +7,7 @@ from typing import Optional
 
 from comfy_api.latest import io
 
-from nodes._agent_common import (
+from ._agent_common import (
     _SYSTEM_PROMPT_DIR,
     _resolve_system,
     _scan_system_prompts,
