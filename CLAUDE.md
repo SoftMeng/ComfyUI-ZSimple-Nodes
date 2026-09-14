@@ -4,7 +4,7 @@ Project guidance for `ComfyUI-ZSimple-Nodes/`. Root repo guidance lives at `../C
 
 ## Project Type
 
-Small ComfyUI custom node plugin — 4 nodes, single-file-per-node, single-responsibility. **Independent subproject**. Personal/utility plugin. License: MIT.
+Small ComfyUI custom node plugin — 5 nodes, single-file-per-node, single-responsibility. **Independent subproject**. Personal/utility plugin. License: MIT.
 
 ## Hard Constraints
 
@@ -27,23 +27,26 @@ Full prohibitions → `../docs/constraint/prohibitions.md`.
 ```
 __init__.py                  # NODE_CLASS_MAPPINGS + NODE_DISPLAY_NAME_MAPPINGS
 nodes/
-  __init__.py                # re-exports the 4 node classes
+  __init__.py                # re-exports the 5 node classes
   _save_common.py            # shared helpers (counter scan, metadata)
   random_number_plus.py      # RandomNumberPlus
   save_image_plus.py         # SaveImagePlus
   save_text_plus.py          # SaveTextPlus
+  save_video_plus.py         # SaveVideoPlus
   zimage_turbo_progressive.py # ZImageTurboProgressive
+  ltx_video_turbo_progressive.py # ZLTXVideoTurboProgressive
 tests/
   test_zimage_turbo_progressive.py
+  test_ltx_video_turbo_progressive.py
 requirements.txt             # only pillow-jxl-plugin (commented)
 README.md                    # primary user-facing docs
 ```
 
 ### Registration
 
-Classic V1-style: 4 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSimple-Nodes` with submenus `image`, `text`, `sampling`.
+Classic V1-style: 5 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSimple-Nodes` with submenus `image`, `text`, `sampling`.
 
-### Nodes (4 total, all active)
+### Nodes (5 total, all active)
 
 | Class | Menu Path | Purpose |
 |---|---|---|
@@ -51,6 +54,7 @@ Classic V1-style: 4 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSi
 | `SaveImagePlus` | `ZSimple-Nodes/image` | Save IMAGE to PNG/JPEG/WebP/JXL with per-format quality + metadata strategy + counter continuation. Outputs `images` / `paths` / `filename_first` / `workflow_json`. |
 | `SaveTextPlus` | `ZSimple-Nodes/text` | Save STRING to `.txt`/`.md`/`.json`/`.csv`; outputs `path` / `byte_count` / `workflow_json`. Fixed filename `<prefix>_00001.<ext>` (no counter continuation). |
 | `ZImageTurboProgressive` | `ZSimple-Nodes/sampling` | 3-stage progressive sampling for Z-Image Turbo. Hardcoded BRAVO/ALPHA sigma presets; `latent_scaling` size chain (fast/quality/none); `intensity` (V2 Adv formula); `creativity_mode` stage2 scramble; per-stage sampler. |
+| `ZLTXVideoTurboProgressive` | `ZSimple-Nodes/sampling` | LTX2.5 AV latent sampler driven by an N-stage `sigmas_pipe`. 14 inputs (`model` / `guider` / `av_latent` / `sampler_obj` / `sigmas_pipe` multiline / `upscale_modes` / `vae_video` / `upscale_model` / `guidance_rescale` / `enforce_per_frame_path` / `enable_stg` / `enable_modality_guidance` / `stg_blocks` / `modality_scale` / `seed`), 1 output (`latent` NestedTensor). Each sigmas_pipe line = one stage's σ schedule; previous stage output is re-noised (by sampler) and used as clean latent_image for the next. `upscale_modes` is a comma-separated list of `external` / `interpolate` / `vae_roundtrip` per inter-stage (stage 0 has no upscale). Per-stage optimizations: SD3 CFG rescale (`guidance_rescale>0`), per_frame_path validation (`enforce_per_frame_path`), STG bundle (`enable_stg`), Modality Guidance bundle (`enable_modality_guidance`). Karras EDM stochastic churn / SD3 resample / SDXL refiner pattern in one node. |
 
 ### Node Specifics
 
@@ -70,6 +74,21 @@ Classic V1-style: 4 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSi
   - **Not thread-safe** (per parent CLAUDE.md: shares `PARTITION_CACHE` model with PowerNodes).
   - Algorithm derived from `ComfyUI-ZImagePowerNodes/nodes/core/zsampler_turbo_core.py` and `zsampler_turbo_X21.py`.
 
+- **ZLTXVideoTurboProgressive**:
+  - AV latent sampler driven by an N-stage `sigmas_pipe` (one σ schedule per line). Each stage's output is re-noised by the sampler and fed to the next as clean latent_image, enabling iterative refinement à la Karras EDM stochastic churn / SD3 resample / SDXL refiner.
+  - **sigmas_pipe parsing** (`_parse_sigmas_pipe`): each line stripped of `[`/`]` brackets, comma-split to `list[float]`. First σ of each line must be in (0, 1] — `1.0` = full-noise T2V; `<1.0` = V2V denoise strength. Only the LAST line must end at 0.0; intermediate lines may stop at σ>0 for **trajectory segmentation** (Z-Image style). Handoff: if next line's first σ == previous line's last σ (1e-6 tolerance), exact continuation via `noise = current_latent["samples"]` (flow-matching blend identity passes the noisy latent through unchanged); otherwise fresh-noise re-blend (Z-Image `_noise_inverse` approximation; keep jumps ≤ ~0.05). All lines monotonically non-increasing.
+  - **upscale_modes parsing** (`_parse_upscale_modes`): comma-separated list, must equal `len(sigmas_pipe)` lines (single value broadcasts). Valid modes: `external`, `interpolate`, `vae_roundtrip`. `external` is rejected for stages ≥ 1 (in-node runs can't interleave external nodes).
+  - **Per-stage optimizations** (all gated by dedicated inputs, apply per stage):
+    - **A. SD3 CFG rescale** (`guidance_rescale>0`): `_make_rescale_cfg_post_cfg` via `set_model_sampler_post_cfg_function`; only applies when σ > 0.5 (Lin et al. 2024).
+    - **B. per_frame_path validation**: `enforce_per_frame_path=True` rejects latents whose noise_mask has spatial extent; triggers `has_spatial_mask=False` path in `_prepare_timestep` (`av_model.py:738-848`).
+    - **C. STG bundle** (`enable_stg=True`): `_make_stg_post_cfg` injected via `set_model_sampler_post_cfg_function`. Pattern from `LTXVSpatioTemporalGuidance` (`nodes_lt.py:940-990`).
+    - **D. Modality Guidance bundle** (`enable_modality_guidance=True`): `_make_modality_post_cfg` injected via `set_model_sampler_post_cfg_function`. Pattern from `LTXVModalityGuidance` (`nodes_lt.py:994-1050`).
+  - **Alternative upscale helpers** (still present from prior refactor, used by `interpolate` / `vae_roundtrip` modes):
+    - `_upscale_interpolate`: pure `F.interpolate(scale=(1,2,2), mode='nearest')` between `per_channel_statistics.un_normalize/normalize`. Zero new model dependency.
+    - `_upscale_vae_roundtrip`: `vae.first_stage_model.decode` → `F.interpolate(scale=(1,2,2), mode='bilinear')` on pixels → `vae.first_stage_model.encode`. Preserves temporal coherence.
+  - **Reference workflow**: `examples/use_new_node.json` (2-stage distilled_default with `upscale_modes="external"`).
+  - **Thread-safety**: depends on the underlying Guider + sampler.
+
 ## Adding a New Node
 
 Per the project's stated convention (in README):
@@ -84,7 +103,7 @@ Per the project's stated convention (in README):
 | Action | Command |
 |---|---|
 | Install deps | `pip install -r requirements.txt` (no-op unless enabling JXL) |
-| Run tests | `python -m pytest tests/` (one test file currently) |
+| Run tests | `python tests/test_*.py` (each file is a standalone runner; pytest fails on this layout because root `__init__.py` imports `folder_paths` which isn't installed in dev envs) |
 
 ## Code Style
 
@@ -112,7 +131,8 @@ Per the project's stated convention (in README):
 
 ## Notes
 
-- **No CI / no linter config in repo.** Tests are minimal (one file for progressive sampler).
+- **No CI / no linter config in repo.** Tests are minimal (one file per node — keep parity when adding new nodes).
 - **`requirements.txt` is effectively a no-op** by default — only enable `pillow-jxl-plugin` if a user picks `format="jxl"`.
 - **No frontend extensions** (`WEB_DIRECTORY` not set) — pure backend nodes.
 - **Author chose `aggressive` scaling** in addition to `fast`/`quality`/`none` — README doesn't document this key; behavior is `stage3` still forced to input size like the others.
+- **`ZLTXVideoTurboProgressive` is intentionally a wrapper around unimplemented methods** — the scaffolding validates inputs, builds AV latent lifecycle, and emits workflow_json, but `_encode_audio` / `_preprocess_image` / `_inject_image` / `_concat_av` / `_separate_av` / `_upscale_latent` / `_sample` / `_apply_creativity_stage1` raise `NotImplementedError` until GPU integration fills them. This is by design: the integration point is well-defined and the user can fill each method independently without re-reading the node's flow logic.

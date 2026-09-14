@@ -18,7 +18,7 @@
 
 ---
 
-## ✨ 七个节点，各自解决一个具体痛点
+## ✨ 八个节点，各自解决一个具体痛点
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
@@ -27,6 +27,7 @@
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | 把提示词和工作流 JSON 存到本地，再也不怕改坏了找不回上一版 |
 | **SaveVideoPlus** | 视频帧序列需要保存为 mp4/webm/gif | mp4(libx264) / webm(libvpx-vp9 恒定质量) / gif(PIL) 三格式；frame_rate / quality / loop_count / pingpong / metadata embed；STRING 输出文件名+帧数；客户端进程 try/finally 清理 |
 | **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | Z-Image Turbo 的三段式采样器：先粗画、再细化、最后出大图，全在一个节点里完成 |
+| **ZLTXVideoTurboProgressive** | LTX2.5 多模态视频工作流需要 14+ LTXV 算子节点堆叠 | LTX2.5 视频两阶段渐进式采样（Stage1 低分辨率 + ×2 升频 + Stage2 高分辨率）；多模态文本/参考图/音频单节点配置 |
 | **ZSimpleAnthropicAgent** | 短 prompt 扩写 / 文案润色需要写规则、调 API | 通过本地 Anthropic 代理调用 Claude Messages API；system prompt 从 markdown 文件下拉选择；STRING → STRING；API 失败直接 raise |
 | **ZSimpleOpenAIAgent** | 短 prompt 需要调用 OpenAI 兼容 API（默认 Qwen）扩写 | 节点参数全自包含（model/api_key/base_url/temperature/max_tokens）；默认指向阿里云 DashScope Qwen；STRING → STRING；空 api_key 或 API 失败直接 raise |
 
@@ -376,6 +377,151 @@ Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速�
 
 ---
 
+### 🎞️ ZLTXVideoTurboProgressive（菜单：`ZSimple-Nodes/sampling`）
+
+LTX2.5 视频单阶段采样节点。接收一个预构建的 `Guider` 和 AV latent，按预设 sigma 调度跑采样。
+
+#### 设计原则
+
+- **专注于采样**：节点不做 AV 生命周期（concat/separate）、CFG 构建、mask 路由——这些由上游节点负责
+- **Guider 作为参数**：用上游 `CFGGuider` 或 `DualCFGGuider` 节点预构建好，传进来
+- **可链式**：2 阶段渐进由"两次单阶段调用 + 中间 native upscale"实现
+
+#### 2 阶段工作流示例
+
+```
+LoadImage
+  → LTXVAddGuide (注入 frame N 参考图)
+  → CLIPTextEncode × 2 (positive / negative)
+  → CFGGuider / DualCFGGuider (model + cond + cfg)
+  → EmptyLTXVLatent (起始视频 latent)
+  → LTXVAudioVAEEncode (audio → audio_latent)
+  → LTXVConcatAVLatent (视频 latent + 音频 latent)
+  → ZLTXVideoTurboProgressive(stage="stage1")
+  → LTXVLatentUpscaler (官方 ×2 latent 上采样)
+  → ZLTXVideoTurboProgressive(stage="stage2")
+  → LTXVSeparateAVLatent (拆 video + audio)
+  → VAEDecodeTiled + LTXVAudioVAEDecode
+  → CreateVideo
+```
+
+#### 输入（14 项）
+
+| 名称 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `model` | MODEL | — | 用于 latent preview callback |
+| `guider` | GUIDER | — | 上游 CFGGuider / DualCFGGuider 节点预构建 |
+| `av_latent` | LATENT | — | 已 concat 的 AV latent（NestedTensor） |
+| `sampler_obj` | SAMPLER | — | 采样算法（如 `euler_ancestral_cfg_pp`） |
+| `sigmas_pipe` | STRING (multiline) | (2 行 distilled_default) | 每行一个 stage 的 σ 调度；前一阶段输出 re-noise 后作为下一阶段输入；每行必须以 1.0 开头、0.0 结尾（首 stage 必须 1.0；后续 stage 可任意 ≤1.0）；单调不增 |
+| `upscale_modes` | STRING | `external` | 每阶段间 upscale 模式；逗号分隔；1 个值广播到所有 stage；stage 0 之后不能用 `external` |
+| `vae_video` | VAE | — | `interpolate` / `vae_roundtrip` 模式必填 |
+| `upscale_model` | LATENT_UPSCALE_MODEL | — | 预留字段（external 模式实际 upscale 由上游节点处理） |
+| `guidance_rescale` | FLOAT | 0.7 | SD3 CFG rescale；每阶段都应用 |
+| `enforce_per_frame_path` | BOOL | false | 强制 noise_mask 纯时间，触发 model 内部 per_frame_path 优化 |
+| `enable_stg` | BOOL | false | 每阶段自动 bundle Spatio-Temporal Guidance（σ-bounded 至 [0.0, 0.5]） |
+| `enable_modality_guidance` | BOOL | false | 每阶段自动 bundle Modality Guidance |
+| `stg_blocks` | STRING | `29` | STG 自注意力 block 索引（逗号分隔） |
+| `modality_scale` | FLOAT | 3.0 | Modality guidance scale；1.0 关闭 |
+| `seed` | INT | 0 | 噪声种子；每个 stage 自动加 i 偏移 |
+
+#### 输出（1 项）
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `latent` | LATENT | 采样后的 AV latent（NestedTensor），下游用 `LTXVSeparateAVLatent` 拆分 |
+
+#### sigmas_pipe 多阶段
+
+每行一个 stage 的 σ schedule，前一阶段输出 re-noise 后传给下一阶段。这是 Karras EDM stochastic churn / SD3 resample / SDXL refiner 在一个节点里的直接表达。
+
+**每行首 σ 规则**：必须 ∈ (0, 1]。
+- `1.0` = 从全噪声开始（纯 T2V / 多阶段细化）
+- `<1.0` = V2V 去噪强度：源视频 latent 按 `x = latent × (1-σ₀) + noise × σ₀` 混合，σ₀ 越小越贴近源视频（0.3~0.4 轻度重绘；0.5~0.6 中度变换；0.7~0.8 大幅重绘）
+
+**每行末 σ 规则**：仅**最后一行**必须以 `0.0` 结尾（VAE 解码需要完全去噪）；中间行可停在 σ > 0 做**轨迹分段**（见下）。所有行内部单调不增。
+
+#### 轨迹分段（Z-Image 风格）
+
+中间行停在 σ_end > 0 时，下一行的交接语义：
+
+| 下一行首 σ 与上一行末 σ 的关系 | 交接行为 |
+|---|---|
+| **相等**（容差 1e-6） | **精确续接**：带噪 latent 原样传递（`noise = latent` 使 `x_init = latent×(1-σ₀)+latent×σ₀ = latent` 恒等），轨迹无缝拼接 |
+| **存在跳变** | 重加噪近似（把上一段输出按 clean latent 混合新噪声，即 Z-Image `_noise_inverse` 手法）；跳变越小近似越好，建议 \|Δσ\| ≤ 0.05 |
+
+相比"每段都去噪到 0 再重加噪"，轨迹分段不做破坏性的噪声往返，**细节保留显著更好**，尤其适合"低分辨率粗去噪 → upscale → 高分辨率续去噪"：
+
+```
+sigmas_pipe:
+  [1.0, 0.98, 0.94, 0.86, 0.80]           ← stage 0 @ 半分辨率，停在 σ=0.80
+  [0.80, 0.72, 0.60, 0.42, 0.20, 0.0]     ← stage 1 @ 全分辨率，精确续接到 0
+
+upscale_modes: "external,interpolate"      ← 段间 interpolate ×2（对带噪 latent 同样有效）
+```
+
+Z-Image Turbo 的 `alpha_8` 预设就是这种形态：stage1 `(0.991→0.920)` 停在高 σ，stage2 以 `(0.935→0)` 近似续接（+0.015 微小跳变）。
+
+示例（distilled_default 2 阶段）：
+```
+[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+[0.909375, 0.725, 0.4219, 0.0]
+```
+
+示例（3 阶段迭代细化）：
+```
+[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+[0.5, 0.25, 0.0]
+[0.357, 0.125, 0.0]
+```
+
+示例（V2V 中度变换，源视频经 VAEEncode 后接入 av_latent）：
+```
+[0.6, 0.5, 0.4, 0.0]
+```
+
+#### upscale_modes 与 sigmas_pipe 配合
+
+`upscale_modes` 长度 = `sigmas_pipe` 行数（除了 1 个值会广播）。**Stage 0 之前不做 upscale**（没有前一阶段）；Stage i > 0 才执行。
+
+| 模式 | 要求 | 行为 |
+|---|---|---|
+| `external` | 仅 stage 0 | 不在节点内 upscale（由用户在两个节点调用之间接 LTXVLatentUpscaler） |
+| `interpolate` | stage > 0 + `vae_video` | 纯 `F.interpolate(scale=(1,2,2))` 在 latent 域 |
+| `vae_roundtrip` | stage > 0 + `vae_video` | VAE decode → bilinear 像素插值 → VAE encode |
+
+**示例**：3 阶段渐进 + 第 1→2 stage 用 interpolate：
+```
+sigmas_pipe:
+  [1.0, ..., 0.725, 0.0]      # stage 0: 全分辨率生成
+  [0.42, 0.21, 0.0]          # stage 1: re-noise 后 upscale 再细化
+  [0.357, 0.125, 0.0]        # stage 2: 进一步细化（无 upscale）
+
+upscale_modes: "external,interpolate,external"
+```
+
+#### 每阶段优化（A / B / C / D）
+
+| 优化 | 触发条件 | 效果 |
+|---|---|---|
+| A. SD3 CFG rescale | `guidance_rescale>0` | 每阶段都应用；高 σ 半段自动 rescale |
+| B. per_frame_path 校验 | `enforce_per_frame_path=True` | 拒绝 noise_mask 有空间维度的 latent |
+| C. STG bundle | `enable_stg=True` | 每阶段自动 bundle Spatio-Temporal Guidance |
+| D. Modality Guidance | `enable_modality_guidance=True` | 每阶段自动 bundle Modality Guidance |
+
+#### Quick Start（最少节点数）
+
+1. **加载模型**：UNETLoader + VAELoader × 2 + CLIPLoader
+2. **构 Guider**：`CLIPTextEncode × 2` → `CFGGuider`（cfg=1.0）
+3. **构 AV latent**：`EmptyLTXVLatentVideo` → `LTXVConcatAVLatent`
+4. **单次采样**（2-stage + external upscaler）：
+   `ZLTXVideoTurboProgressive(sigmas_pipe="<2 行 distilled_default>")`
+5. **解码 + 保存**：`LTXVSeparateAVLatent` → `VAEDecodeTiled` + `LTXVAudioVAEDecode` → `CreateVideo`
+
+参考工作流见 `examples/use_new_node.json`。
+
+---
+
 ### 🤖 ZSimpleOpenAIAgent（菜单：`ZSimple-Nodes/agent`）
 
 通过 OpenAI 兼容 Chat Completions API（默认指向阿里云 DashScope Qwen）把一段简短 prompt 扩展成更完整、更结构化的输出。**STRING → STRING**：输入文本 → 输出扩展后的文本。所有连接信息都在节点 UI 上，零环境变量配置 — 跨平台复制 workflow 即可直接跑。
@@ -539,6 +685,48 @@ model 字段填对应端点支持的模型名即可。
 </details>
 
 ---
+
+## ❓ FAQ
+
+### 为什么 CFG 默认是 1.0？
+
+LTX2.5-distilled 模型训练时**不使用** classifier-free guidance（CFG=1.0 不是 typo）。把上游 `CFGGuider` 的 cfg 设为 1.0；改成 1.5 或 2.0 会显著降低视频质量。
+
+> 上游 `LTXVDualCFGGuider`（若使用）默认 video_cfg=3.0、audio_cfg=7.0；distilled workflow 把两者都覆盖为 1.0。dev / SFT 模型可参考 [HuggingFace Lightricks/LTX-2.5-Diffusers](https://huggingface.co/Lightricks/LTX-2.5-Diffusers) 的 `modality_scale` / `guidance_rescale`。
+
+### 为什么我的视频全黑/全噪？
+
+最常见原因：
+
+1. **CFG 没有锁在 1.0** —— 上游 Guider 节点 cfg 改回 1.0
+2. **sigma preset 被覆盖** —— schedule 输入必须是默认 `distilled_default`
+3. **帧数不满足 (length-1) % 8 == 0** —— 实际合法值：9, 17, 25, 33, ..., 97, 121, 241, 361
+4. **空 latent 尺寸不能被 32 整除** —— 例如 800×800 应改为 768×768 或 832×832
+
+### 怎么注入参考图？
+
+本节点不做图像注入——用上游 `LTXVAddGuide(frame_idx=N, strength=...)` 在 conditioning 和 latent 进入 `LTXVConcatAVLatent` 之前注入参考。patch 过的 conditioning 和 noise_mask 会自然流入 Guider。
+
+### 为什么升频后 frame 48（或任一引导帧）参考丢失？
+
+因为 `LTXVLatentUpscaler` 在空间 ×2 升频时会丢弃 noise_mask。要保留参考：在 upscaler 与 `ZLTXVideoTurboProgressive(stage="stage2")` 之间再跑一次 `LTXVAddGuide`，或确保 noise_mask 在模型 patch 中被保留。
+
+### 音频怎么保存？
+
+节点输出单个 `latent`（NestedTensor AV latent）。下游需用 `LTXVSeparateAVLatent` 拆分为 `video_latent` + `audio_latent`，然后：
+- 视频 → `VAEDecodeTiled` → `CreateVideo`
+- 音频 → `LTXVAudioVAEDecode` → `CreateVideo`（audio 槽）
+
+### 能自定义 sigma 吗？
+
+当前 schedule 锁 `distilled_default` 以保证 distilled 正确性。**自定义 sigma 输入暂未暴露**——如需自定义，可改用原生 `KSampler` + `comfy.sample.sample_custom` 自行连线。
+
+### 361 帧能用吗？
+
+能用，但属于"长视频"用法（>121 帧单段默认）。建议：
+
+- 在上游用更低分辨率的 latent + 升频策略控制显存
+- 或分段拼接：拆成 2 段 181 帧（约 7.5 秒），用相同 seed 续接
 
 ## 🛠️ 添加新节点
 
