@@ -18,7 +18,7 @@
 
 ---
 
-## ✨ Four nodes, each solves one specific pain point
+## ✨ Five nodes, each solves one specific pain point
 
 | Node | Pain point | Key features |
 |---|---|---|
@@ -26,6 +26,7 @@
 | **SaveImagePlus** | Built-in save node locks you into PNG / fixed compression | Save in PNG / JPG / WebP / JXL, tune each format's quality independently. Auto-numbers every file so nothing ever gets overwritten |
 | **SaveTextPlus** | Need to dump prompts / workflow JSON to disk fast | Save prompts and workflow JSON to disk — never lose a working version again |
 | **ZImageTurboProgressive** | No single-node 3-stage progressive sampler for Z-Image Turbo | A 3-stage progressive sampler for Z-Image Turbo: rough pass → refine → final, all in one node — no manual chaining required |
+| **ZLTXVideoTurboProgressive** | LTX2.5 multimodal video workflows require 14+ LTXV operator nodes | LTX2.5 two-stage progressive video sampler (Stage1 low-res + ×2 upscale + Stage2 high-res); multimodal text/image/audio in single node config |
 
 > [!NOTE]
 > The project is actively iterated; nodes are added on demand. If you have a workflow pain point you'd like solved, open an Issue.
@@ -304,6 +305,208 @@ A **one-click 3-stage sampler** for Z-Image Turbo: sketch at low resolution (fas
 </details>
 
 ---
+
+### 🎞️ ZLTXVideoTurboProgressive (Menu: `ZSimple-Nodes/sampling`)
+
+Single-stage AV latent sampler for LTX2.5. Receives a pre-built `Guider` and AV latent, runs sampling on a preset sigma schedule.
+
+#### Design principles
+
+- **Focused on sampling**: the node does not handle AV lifecycle (concat/separate), CFG construction, or mask routing — those live in upstream nodes.
+- **Guider as parameter**: built upstream by `CFGGuider` or `DualCFGGuider`, then passed in.
+- **Chainable**: 2-stage progressive = two single-stage calls + native upscale between them.
+
+#### 2-stage workflow example
+
+```
+LoadImage
+  → LTXVAddGuide (inject frame N reference)
+  → CLIPTextEncode × 2 (positive / negative)
+  → CFGGuider / DualCFGGuider (model + cond + cfg)
+  → EmptyLTXVLatent (starting video latent)
+  → LTXVAudioVAEEncode (audio → audio_latent)
+  → LTXVConcatAVLatent (video latent + audio latent)
+  → ZLTXVideoTurboProgressive(stage="stage1")
+  → LTXVLatentUpscaler (official ×2 latent upscale)
+  → ZLTXVideoTurboProgressive(stage="stage2")
+  → LTXVSeparateAVLatent (split video + audio)
+  → VAEDecodeTiled + LTXVAudioVAEDecode
+  → CreateVideo
+```
+
+#### Inputs (14)
+
+| Name | Type | Default | Description |
+|---|---|---|---|
+| `model` | MODEL | — | For latent preview callback |
+| `guider` | GUIDER | — | Pre-built upstream CFGGuider / DualCFGGuider |
+| `av_latent` | LATENT | — | Concatenated AV latent (NestedTensor) |
+| `sampler_obj` | SAMPLER | — | Sampling algorithm (e.g. `euler_ancestral_cfg_pp`) |
+| `sigmas_pipe` | STRING (multiline) | (2-line distilled_default) | One σ schedule per line = one stage. Previous stage's output is re-noised and used as input for the next. Stage 0 must start at 1.0; subsequent stages may start at any σ ≤ 1.0. All stages end at 0.0 and are monotonically non-increasing. |
+| `upscale_modes` | STRING | `external` | Per-stage upscale mode, comma-separated. Single value broadcasts. `external` is only valid for stage 0 (use 'interpolate' or 'vae_roundtrip' between stages). |
+| `vae_video` | VAE | — | Required when any upscale_mode is 'interpolate' or 'vae_roundtrip' |
+| `upscale_model` | LATENT_UPSCALE_MODEL | — | Reserved |
+| `guidance_rescale` | FLOAT | 0.7 | SD3 CFG rescale; applied per stage |
+| `enforce_per_frame_path` | BOOL | false | Reject noise_masks with spatial extent; triggers model's per_frame_path optimization |
+| `enable_stg` | BOOL | false | Auto-bundle STG for every stage |
+| `enable_modality_guidance` | BOOL | false | Auto-bundle Modality Guidance for every stage |
+| `stg_blocks` | STRING | `29` | STG self-attention block indices (comma-separated) |
+| `modality_scale` | FLOAT | 3.0 | Modality guidance scale; 1.0 disables |
+| `seed` | INT | 0 | Noise seed; each stage adds stage-index offset (seed+i) |
+
+#### Output (1)
+
+| Name | Type | Description |
+|---|---|---|
+| `latent` | LATENT | Sampled AV latent (NestedTensor); downstream uses `LTXVSeparateAVLatent` to split |
+
+#### sigmas_pipe multi-stage
+
+Each line is one stage's σ schedule. The previous stage's output is re-noised (by the sampler) and fed to the next as clean latent_image. This is the direct expression of Karras EDM stochastic churn / SD3 resample / SDXL refiner inside one node.
+
+**First σ of each line** must be in `(0, 1]`:
+- `1.0` = full noise (pure T2V / multi-stage refinement)
+- `<1.0` = V2V denoise strength: source-video latent is blended as `x = latent × (1-σ₀) + noise × σ₀`; lower σ₀ follows the source more (0.3-0.4 light repaint; 0.5-0.6 medium transform; 0.7-0.8 heavy repaint)
+
+**Last σ of each line**: only the LAST line must end at `0.0` (VAE decode needs a fully denoised latent); intermediate lines may stop at σ > 0 for trajectory segmentation (below). All lines monotonically non-increasing.
+
+#### Trajectory segmentation (Z-Image style)
+
+When an intermediate line stops at σ_end > 0, the next line's handoff semantics:
+
+| Next line's first σ vs previous line's last σ | Handoff behavior |
+|---|---|
+| **Equal** (1e-6 tolerance) | **Exact continuation**: the partially-noised latent passes through unchanged (`noise = latent` makes `x_init = latent×(1-σ₀)+latent×σ₀ = latent`, an identity); trajectories splice seamlessly |
+| **A jump** | Re-noise approximation (previous output blended with fresh noise as if clean — the Z-Image `_noise_inverse` technique); smaller jumps approximate better, keep \|Δσ\| ≤ 0.05 |
+
+Compared to "denoise every stage to 0 then re-noise", segmentation avoids the destructive noise round-trip and **preserves detail much better** — ideal for "coarse denoise at low res → upscale → continue at high res":
+
+```
+sigmas_pipe:
+  [1.0, 0.98, 0.94, 0.86, 0.80]           ← stage 0 @ half resolution, stops at σ=0.80
+  [0.80, 0.72, 0.60, 0.42, 0.20, 0.0]     ← stage 1 @ full resolution, exact continuation to 0
+
+upscale_modes: "external,interpolate"      ← ×2 interpolate between stages (works on noisy latents)
+```
+
+Z-Image Turbo's `alpha_8` preset uses exactly this shape: stage1 `(0.991→0.920)` stops at high σ, stage2 continues `(0.935→0)` with a tiny +0.015 bump.
+
+Example (distilled_default 2-stage):
+```
+[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+[0.909375, 0.725, 0.4219, 0.0]
+```
+
+Example (3-stage iterative refinement):
+```
+[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]
+[0.5, 0.25, 0.0]
+[0.357, 0.125, 0.0]
+```
+
+Example (V2V medium transform — source video encoded via VAEEncode feeds av_latent):
+```
+[0.6, 0.5, 0.4, 0.0]
+```
+
+#### upscale_modes × sigmas_pipe
+
+`upscale_modes` length should equal `sigmas_pipe` lines (single value broadcasts). **Stage 0 never upscales** (no predecessor); stage i > 0 executes the upscale.
+
+| Mode | Requires | Behavior |
+|---|---|---|
+| `external` | stage 0 only | No in-node upscale (user wires `LTXVLatentUpscaler` between two node calls) |
+| `interpolate` | stage > 0 + `vae_video` | Pure `F.interpolate(scale=(1,2,2))` in latent space |
+| `vae_roundtrip` | stage > 0 + `vae_video` | VAE decode → bilinear pixel upscale → VAE encode |
+
+**Example**: 3-stage progressive + interpolate between stage 1→2:
+```
+sigmas_pipe:
+  [1.0, ..., 0.725, 0.0]      # stage 0: full-resolution generation
+  [0.42, 0.21, 0.0]          # stage 1: re-noise + upscale + refine
+  [0.357, 0.125, 0.0]        # stage 2: refine (no upscale)
+
+upscale_modes: "external,interpolate,external"
+```
+
+#### Per-stage optimizations (A / B / C / D)
+
+| Optimization | Trigger | Effect |
+|---|---|---|
+| A. SD3 CFG rescale | `guidance_rescale>0` | Applied per stage; debiases high-σ CFG output |
+| B. per_frame_path validation | `enforce_per_frame_path=True` | Rejects noise_masks with spatial extent |
+| C. STG bundle | `enable_stg=True` | Auto-bundles Spatio-Temporal Guidance per stage |
+| D. Modality Guidance bundle | `enable_modality_guidance=True` | Auto-bundles Modality Guidance per stage |
+
+#### Quick Start (minimum nodes)
+
+1. **Load models**: UNETLoader + VAELoader × 2 + CLIPLoader
+2. **Build Guider**: `CLIPTextEncode × 2` → `CFGGuider` (cfg=1.0)
+3. **Build AV latent**: `EmptyLTXVLatentVideo` → `LTXVConcatAVLatent`
+4. **Single call sampling** (2-stage, default sigmas_pipe):
+   `ZLTXVideoTurboProgressive(sigmas_pipe="<2-line distilled_default>")`
+5. **Decode + save**: `LTXVSeparateAVLatent` → `VAEDecodeTiled` + `LTXVAudioVAEDecode` → `CreateVideo`
+
+Reference workflow: `examples/use_new_node.json`.
+
+##### 4. Full multimodal (Text + Image + Audio)
+
+Combine 1+2+3, all optional inputs connected, `stages` defaults to `auto_2stage`.
+
+##### 5. Out of VRAM?
+
+- Change `latent_scaling` from `quality` to `aggressive` (Stage1 runs at 0.25× spatial, saves ~4× VRAM)
+- Change `intensity` from 1.0 to 0.8 (lower noise)
+- Change `stages` from `auto_2stage` to `stage1_only` (skip upscale + Stage2)
+
+##### 6. Want a quick preview?
+
+- `stages=stage1_only` + `steps_s1=4` → 4-step Stage1-only preview, ~30 seconds
+
+---
+
+## ❓ FAQ
+
+### Why is CFG default 1.0?
+
+LTX2.5-distilled models are trained **without** classifier-free guidance (CFG=1.0 is not a typo). Set `cfg=1.0` on the upstream `CFGGuider` node; changing to 1.5 or 2.0 will significantly degrade video quality.
+
+> Upstream `LTXVDualCFGGuider` (if used) defaults to `video_cfg=3.0, audio_cfg=7.0`; for distilled workflows override both to 1.0. For dev / SFT models, see [HuggingFace Lightricks/LTX-2.5-Diffusers](https://huggingface.co/Lightricks/LTX-2.5-Diffusers) for modality_scale / guidance_rescale guidance.
+
+### Why is my video all black/noise?
+
+Most common causes:
+
+1. **CFG not locked at 1.0** — set cfg=1.0 on the upstream Guider node
+2. **Sigma preset overwritten** — schedule input must use default `distilled_default` for distilled models
+3. **Frame count does not satisfy `(length-1) % 8 == 0`** — valid values: 9, 17, 25, 33, ..., 97, 121, 241, 361
+4. **Empty latent dimensions not divisible by 32** — e.g. 800×800 should be 768×768 or 832×832
+
+### How do I inject a reference image?
+
+This node does not handle image injection — use upstream `LTXVAddGuide(frame_idx=N, strength=...)` to inject the reference into the conditioning and latent before they reach `LTXVConcatAVLatent`. The patched conditioning and noise_mask flow into the Guider naturally.
+
+### Why does frame 48 (or any guided frame) lose the reference after upscale?
+
+Because `LTXVLatentUpscaler` drops the noise_mask during spatial ×2 upscaling. To keep the reference, run a second `LTXVAddGuide` between the upscaler and `ZLTXVideoTurboProgressive(stage="stage2")`, OR ensure the noise_mask in the model patches is preserved through upscale.
+
+### How do I save audio?
+
+The node outputs a single `latent` (NestedTensor AV latent). Downstream must use `LTXVSeparateAVLatent` to split into `video_latent` + `audio_latent`, then:
+- video → `VAEDecodeTiled` → `CreateVideo`
+- audio → `LTXVAudioVAEDecode` → `CreateVideo` (audio slot)
+
+### Can I customize sigma?
+
+The current schedule is locked to `distilled_default` to guarantee distilled correctness. **Custom sigma input is not yet exposed** — if you need customization, use native `KSampler` + `comfy.sample.sample_custom` and wire manually.
+
+### Can I use 361 frames?
+
+Yes, but it is "long-form" usage (>121 single-shot default). Recommendations:
+
+- Use `latent_scaling=aggressive` to save VRAM
+- Use `intensity=0.9` to lower noise_overdose
+- Or segment: split into 2 segments of 181 frames (~7.5 seconds each), continue with same seed
 
 ## 🛠️ Adding a New Node
 
