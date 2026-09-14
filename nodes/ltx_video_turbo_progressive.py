@@ -1,26 +1,36 @@
-"""Z-LTX Video Turbo Progressive — AV latent sampler with arbitrary N-stage σ-pipe.
+"""Z-LTX Video Turbo Progressive — AV latent sampler with arbitrary N-stage sigma pipe.
 
-Multi-stage progressive sampling via `sigmas_pipe` (one sigma schedule per line).
-Each stage's output is re-noised (by the sampler) and fed to the next stage as
-its clean latent_image, enabling iterative refinement à la Karras EDM
-stochastic churn / SD3 resample / SDXL refiner.
+Multi-stage progressive sampling driven by `sigmas_pipe` (one sigma schedule
+per line). The input av_latent is the FINAL resolution; per-stage working
+scale is computed from the stage count so the model denoises at a coarser
+resolution in early stages and refines to full size in the last stage.
+
+Stage scale chain (user-defined):
+  1 stage : [1.00]
+  2 stages: [0.75, 1.00]
+  3 stages: [0.50, 0.75, 1.00]
+  4 stages: [0.50, 0.50, 0.75, 1.00]
+  5 stages: [0.50, 0.50, 0.50, 0.75, 1.00]
+  N >= 6  : [0.50] * (N - 3) + [0.75, 1.00]
+
+The chain is selected by `upscale_model`:
+  none: ignore the chain, every stage runs at the input (1.0) scale
+  fast: apply the chain above
+
+Inter-stage handoff: each stage runs to sigma=0 (denoised). The next stage's
+entrance noise phase is seeded from the previous stage's x0 via
+`_stage_handoff(video, audio, sigma_next, seed) = (1 - s) * x0 + s * noise`,
+which matches the flow-matching blend `latent * (1 - s) + noise * s` that
+ModelSamplingDiscreteFlow applies internally when sigma-scaling a fresh
+input — so passing this blended tensor as both `noise` and `latent_image`
+produces the same effective x0 that the model would see on a sigma-rescale
+boundary (mirrors Z-Image `_noise_inverse` with sigma_target=next stage
+first sigma).
 
 Per-stage options (apply to every stage):
-- A. SD3-style CFG rescale (`guidance_rescale` > 0): debiases high-σ CFG
-    saturation.
-- B. per_frame_path validation (`enforce_per_frame_path=True`): reject latents
-    whose noise_mask forces `has_spatial_mask=True` in
-    `_prepare_timestep` (`comfy/ldm/lightricks/av_model.py:738-848`).
-- C. STG bundle (`enable_stg=True`): auto-inject `LTXVSpatioTemporalGuidance`
-    (`comfy_extras/nodes_lt.py:940-990`) as a post_cfg_function.
-- D. Modality Guidance bundle (`enable_modality_guidance=True`):
-    auto-inject `LTXVModalityGuidance` (`nodes_lt.py:994-1050`).
-
-Per-stage upscale (`upscale_modes`):
-- "interpolate": pure F.interpolate in latent space (zero new model deps).
-- "vae_roundtrip": VAE decode → bilinear pixel upscale → VAE encode.
-- "external" is rejected for stages other than the first (inter-stage upscale
-    must happen in-node when running N>1 stages in one call).
+- SD3 CFG rescale (`guidance_rescale` > 0): debiases high-sigma CFG saturation.
+- STG bundle (`enable_stg=True`).
+- Modality Guidance bundle (`enable_modality_guidance=True`).
 """
 
 from __future__ import annotations
@@ -29,15 +39,9 @@ import math
 import re
 
 import torch
-import torch.nn.functional as F
 
 from comfy_api.latest import io
 
-
-_LTXV_DEFAULT_MAX_SHIFT = 2.05
-_LTXV_DEFAULT_BASE_SHIFT = 0.95
-_LTXV_DEFAULT_X1 = 1024
-_LTXV_DEFAULT_X2 = 4096
 
 _DISTILLED_DEFAULT_SIGMAS_PIPE = (
     "[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]\n"
@@ -58,31 +62,36 @@ def _parse_sigmas_pipe(s: str) -> list[list[float]]:
     return result
 
 
-def _parse_upscale_modes(s: str, n_stages: int) -> list[str]:
-    modes = [m.strip() for m in s.split(",") if m.strip()]
-    if len(modes) == 1:
-        modes = modes * n_stages
-    elif len(modes) != n_stages:
-        raise ValueError(
-            f"upscale_modes has {len(modes)} entries but sigmas_pipe has "
-            f"{n_stages} stages (need 1 or {n_stages})"
-        )
-    for m in modes:
-        if m not in ("external", "interpolate", "vae_roundtrip"):
-            raise ValueError(
-                f"unknown upscale_mode '{m}' (must be external/interpolate/vae_roundtrip)"
-            )
-    return modes
+def _stage_scale_chain(n: int) -> list[float]:
+    """Per-stage working-scale chain (relative to the input latent's spatial size).
+
+    Stage 0 always runs at the chain's first scale. The chain always ends
+    at 1.0 so the final stage restores the input resolution. Intermediate
+    scales repeat 0.50 for stability; the last two are 0.75 and 1.00.
+    """
+    if n <= 0:
+        raise ValueError(f"stage count must be >= 1, got {n}")
+    if n == 1:
+        return [1.0]
+    if n == 2:
+        return [0.75, 1.0]
+    if n == 3:
+        return [0.5, 0.75, 1.0]
+    if n == 4:
+        return [0.5, 0.5, 0.75, 1.0]
+    if n == 5:
+        return [0.5, 0.5, 0.5, 0.75, 1.0]
+    return [0.5] * (n - 3) + [0.75, 1.0]
 
 
 def _validate_stage_sigmas(sigmas: list[float]) -> None:
-    """Validate a single stage's σ schedule.
+    """Validate a single stage's sigma schedule.
 
     Constraints:
-    - ≥ 2 values
+    - >= 2 values
     - monotonically non-increasing
 
-    A stage may end at σ_end > 0 (trajectory segmentation, Z-Image style);
+    A stage may end at sigma_end > 0 (trajectory segmentation, Z-Image style);
     only the last pipe line must end at 0.0 (checked in validate_inputs).
     """
     if len(sigmas) < 2:
@@ -95,29 +104,29 @@ def _validate_stage_sigmas(sigmas: list[float]) -> None:
             )
 
 
-def _make_rescale_cfg_post_cfg(guidance_rescale: float, threshold: float = 0.5):
+def _make_rescale_cfg_post_cfg(guidance_rescale: float):
     def post_cfg(args):
         denoised = args["denoised"]
         cond = args["cond_denoised"]
         sigma = args["sigma"]
         sigma_val = float(sigma[0].item()) if hasattr(sigma, "shape") else float(sigma)
-        if sigma_val <= threshold or guidance_rescale <= 0.0:
+        if sigma_val <= 0.5 or guidance_rescale <= 0.0:
             return denoised
         return denoised * guidance_rescale + cond * (1.0 - guidance_rescale)
 
     return post_cfg
 
 
-def _make_stg_post_cfg(blocks_str: str, scale: float, start_percent: float = 0.0, end_percent: float = 0.5):
+def _make_stg_post_cfg(blocks_str: str):
     block_set = frozenset(int(b) for b in re.findall(r"\d+", blocks_str or ""))
 
     def post_cfg(args):
-        if scale == 0 or not block_set:
+        if not block_set:
             return args["denoised"]
 
         sigma_ = float(args["sigma"][0].item())
         sigma_norm = max(0.0, min(1.0, sigma_))
-        if sigma_norm < (1.0 - end_percent) or sigma_norm > (1.0 - start_percent):
+        if sigma_norm < 0.5 or sigma_norm > 1.0:
             return args["denoised"]
 
         cond_pred = args["cond_denoised"]
@@ -133,19 +142,14 @@ def _make_stg_post_cfg(blocks_str: str, scale: float, start_percent: float = 0.0
         model_options["transformer_options"] = transformer_options
 
         (perturbed,) = comfy.samplers.calc_cond_batch(args["model"], [cond], x, args["sigma"], model_options)
-        return cfg_result + (cond_pred - perturbed) * scale
+        return cfg_result + (cond_pred - perturbed)
 
     return post_cfg
 
 
-def _make_modality_post_cfg(modality_scale: float, start_percent: float = 0.0, end_percent: float = 1.0):
+def _make_modality_post_cfg(modality_scale: float):
     def post_cfg(args):
         if math.isclose(modality_scale, 1.0):
-            return args["denoised"]
-
-        sigma_ = float(args["sigma"][0].item())
-        sigma_norm = max(0.0, min(1.0, sigma_))
-        if sigma_norm < (1.0 - end_percent) or sigma_norm > (1.0 - start_percent):
             return args["denoised"]
 
         cond_pred = args["cond_denoised"]
@@ -167,38 +171,18 @@ def _make_modality_post_cfg(modality_scale: float, start_percent: float = 0.0, e
     return post_cfg
 
 
-def _spatial_mask_present(av_latent) -> bool:
-    mask = av_latent.get("noise_mask", None)
-    if mask is None:
-        return False
-    if getattr(mask, "is_nested", False):
-        mask = mask.unbind()[0]
-    if not hasattr(mask, "shape"):
-        return False
-    shape = tuple(mask.shape)
-    if len(shape) == 5:
-        return shape[-2] != 1 or shape[-1] != 1
-    if len(shape) == 3:
-        return shape[-2] != 1 or shape[-1] != 1
-    if len(shape) == 2:
-        return shape[-1] != 1
-    return True
-
-
 def _count_guide_frames(guider, video_shape) -> int:
     """Count appended guide latent frames from guider conditioning (LTXVAddGuide appends them at the temporal end).
 
-    Mirrors get_keyframe_idxs logic from comfy_extras/nodes_lt.py — tokens_per_frame
-    is (H//2)*(W//2) for the SymmetricPatchifier's (1,2,2) patch size.
+    Mirrors `get_keyframe_idxs` in comfy_extras/nodes_lt.py — tokens_per_frame
+    is `latent_shape[-2] * latent_shape[-1]` for SymmetricPatchifier(1).
     """
-    conds = getattr(guider, "original_conds", None) or getattr(guider, "conds", None) or {}
+    conds = guider.original_conds
     _, _, _, H, W = video_shape
     tokens_per_frame = max(1, H * W)
     for c in conds.get("positive", []):
-        kf = None
-        if isinstance(c, dict):
-            kf = c.get("keyframe_idxs", None)
-        if kf is not None and getattr(kf, "numel", lambda: 0)() > 0 and kf.dim() >= 3:
+        kf = c.get("keyframe_idxs", None) if isinstance(c, dict) else None
+        if kf is not None and kf.dim() >= 3 and kf.shape[2] > 0:
             n = kf.shape[2] // tokens_per_frame
             if n > 0:
                 return n
@@ -231,21 +215,8 @@ def _validate_av_samples(samples) -> tuple:
     return video, audio
 
 
-def _crop_guides(current_latent, guider, clear_conds=False, resize_keyframe_tokens=None):
-    """Crop appended guide frames from the video stream (LTXVAddGuide appends them at the temporal end).
-
-    clear_conds=True nulls keyframe_idxs/guide_attention_entries entirely — used when the
-    reference should be dropped (e.g. the inter-stage upscale is so destructive that the
-    pre-upscale attention map no longer applies). Reference influence from the previous
-    stage remains only as baked-in latent structure.
-
-    resize_keyframe_tokens=int scales the recorded token count in-place to match a new
-    spatial resolution: multiplies both keyframe_idxs tokens AND each
-    guide_attention_entry["pre_filter_count"] by the given factor. Used after an inter-stage
-    upscale so the model's per-frame token-count divisibility check
-    (comfy/ldm/lightricks/model.py:1122) passes while keeping the reference frame intact at
-    the same temporal position. The factor should be (new_H*new_W) / (old_H*old_W).
-    """
+def _crop_guides(current_latent, guider):
+    """Crop appended guide frames from the video stream (LTXVAddGuide appends them at the temporal end)."""
     import comfy.nested_tensor
 
     video, audio = _validate_av_samples(current_latent["samples"])
@@ -263,74 +234,61 @@ def _crop_guides(current_latent, guider, clear_conds=False, resize_keyframe_toke
     out = {**current_latent, "samples": comfy.nested_tensor.NestedTensor((video, audio))}
     if nm is not None:
         out["noise_mask"] = nm
-    for key in ("positive", "negative"):
-        for c in getattr(guider, "original_conds", {}).get(key, []):
-            if not isinstance(c, dict):
-                continue
-            if clear_conds:
-                c["keyframe_idxs"] = None
-                c["guide_attention_entries"] = None
-            elif resize_keyframe_tokens and resize_keyframe_tokens > 1:
-                kf = c.get("keyframe_idxs")
-                if kf is not None and kf.shape[2] > 0:
-                    cur_tok = kf.shape[2]
-                    want_tok = cur_tok * resize_keyframe_tokens
-                    pad = want_tok - cur_tok
-                    if pad > 0:
-                        # Replicate last guide token `pad` times so the spatial coord stays
-                        # valid for the new resolution; the model only requires divisibility.
-                        last = kf[:, :, -1:, :]
-                        tail = last.expand(-1, -1, pad, -1)
-                        c["keyframe_idxs"] = torch.cat([kf, tail], dim=2)
-                entries = c.get("guide_attention_entries")
-                if entries:
-                    for e in entries:
-                        if "pre_filter_count" in e:
-                            e["pre_filter_count"] *= resize_keyframe_tokens
     return out
 
 
-def _upscale_interpolate(av_latent, vae_video):
+def _stage_handoff(video_5d: torch.Tensor, audio_4d: torch.Tensor,
+                   sigma_next: float, seed: int):
+    """Stage boundary noise-phase handoff (Z-Image _noise_inverse equivalent).
+
+    Caller must pass a denoised (sigma=0) latent. Given stage i's x0 and the
+    next stage's entrance sigma, return the (video, audio) pair to hand to
+    the next sampler. The formula `(1 - s) * x0 + s * noise` matches the
+    flow-matching blend that ModelSamplingDiscreteFlow applies internally
+    when sigma-scaling a fresh input; passing this blended tensor as the
+    next stage's noise gives the next sampler a noise-phase-aligned starting
+    point instead of a re-rolled random one.
+    """
+    if sigma_next <= 0.0:
+        return video_5d, audio_4d
+    s = float(sigma_next)
+    one_minus_s = 1.0 - s
+    device = video_5d.device
+    dtype = video_5d.dtype
+    g_v = torch.Generator(device=device).manual_seed(int(seed))
+    g_a = torch.Generator(device=device).manual_seed(int(seed) + 1)
+    noise_v = torch.randn(video_5d.shape, generator=g_v, device=device, dtype=dtype)
+    noise_a = torch.randn(audio_4d.shape, generator=g_a, device=device, dtype=dtype)
+    return one_minus_s * video_5d + s * noise_v, one_minus_s * audio_4d + s * noise_a
+
+
+def _resize_video_for_scale(video_5d: torch.Tensor, scale: float):
+    """Bilinearly resize a 5D video latent to `scale` of its spatial dims, rounded to multiples of 8.
+
+    Returns the input unchanged when scale == 1.0 or when the rounded
+    target size already matches.
+    """
+    import comfy.utils
+
+    if scale == 1.0:
+        return video_5d
+    _, _, _, H, W = video_5d.shape
+    new_h = max(8, round(H * scale / 8) * 8)
+    new_w = max(8, round(W * scale / 8) * 8)
+    if new_h == H and new_w == W:
+        return video_5d
+    return comfy.utils.common_upscale(video_5d, new_w, new_h, "bilinear", "disabled")
+
+
+def _scale_video_stream(samples_or_mask, scale: float):
+    """Resize the video stream inside an AV samples / noise_mask NT(2). Audio stream unchanged."""
     import comfy.nested_tensor
 
-    samples = av_latent["samples"]
-    stats = vae_video.first_stage_model.per_channel_statistics
-
-    def _interp(t):
-        # t: (B, C, T, H, W) latent. F.interpolate bilinear is 4D-only; collapse to (B*T, C, H, W),
-        # upsample, restore (B, C, T, H', W'). Time dim kept untouched.
-        u = stats.un_normalize(t)
-        B, C, T, H, W = u.shape
-        u_4d = u.permute(0, 2, 1, 3, 4).reshape(B * T, C, H, W)
-        u_up = F.interpolate(u_4d, scale_factor=(2, 2), mode="bilinear", align_corners=False)
-        u_up = u_up.reshape(B, T, C, u_up.shape[-2], u_up.shape[-1]).permute(0, 2, 1, 3, 4)
-        return stats.normalize(u_up)
-
-    if getattr(samples, "is_nested", False):
-        v_stream, a_stream = samples.unbind()
-        new_samples = comfy.nested_tensor.NestedTensor((_interp(v_stream), a_stream))
-    else:
-        new_samples = _interp(samples)
-    return {**av_latent, "samples": new_samples}
-
-
-def _upscale_vae_roundtrip(av_latent, vae_video):
-    import comfy.nested_tensor
-
-    samples = av_latent["samples"]
-    fs_model = vae_video.first_stage_model
-
-    def _roundtrip(t):
-        pixels = fs_model.decode(t)
-        pixels_up = F.interpolate(pixels, scale_factor=(1, 2, 2), mode="bilinear")
-        return fs_model.encode(pixels_up)
-
-    if getattr(samples, "is_nested", False):
-        v_stream, a_stream = samples.unbind()
-        new_samples = comfy.nested_tensor.NestedTensor((_roundtrip(v_stream), a_stream))
-    else:
-        new_samples = _roundtrip(samples)
-    return {**av_latent, "samples": new_samples}
+    if not getattr(samples_or_mask, "is_nested", False):
+        return _resize_video_for_scale(samples_or_mask, scale)
+    video, audio = samples_or_mask.unbind()
+    new_video = _resize_video_for_scale(video, scale)
+    return comfy.nested_tensor.NestedTensor((new_video, audio))
 
 
 class ZLTXVideoTurboProgressive(io.ComfyNode):
@@ -341,23 +299,18 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
             node_id="ZLTXVideoTurboProgressive",
             display_name="Z-LTX Video Turbo Progressive",
             category="ZSimple-Nodes/sampling",
-            description="AV latent sampler driven by an N-stage sigma pipe. Each line of sigmas_pipe is one stage's σ schedule; the previous stage's output is re-noised (by the sampler) and fed to the next as clean latent_image. Per-stage upscale via upscale_modes.",
+            description="AV latent sampler driven by an N-stage sigma pipe. Each line of sigmas_pipe is one stage's sigma schedule; the previous stage's denoised output is mixed with fresh noise (Z-Image _noise_inverse) for the next stage's entrance. Per-stage working scale (upscale_model=fast): 1 stage=[1.00], 2=[0.75,1.00], 3=[0.50,0.75,1.00], 4=[0.50,0.50,0.75,1.00], 5=[0.50,0.50,0.50,0.75,1.00], N>=6=[0.50]*(N-3)+[0.75,1.00].",
             inputs=[
                 io.Model.Input("model", tooltip="For latent preview callback."),
                 io.Guider.Input("guider", tooltip="Pre-built Guider from upstream CFGGuider / DualCFGGuider node."),
-                io.Latent.Input("av_latent", tooltip="NestedTensor AV latent from upstream LTXVConcatAVLatent."),
+                io.Latent.Input("av_latent", tooltip="NestedTensor AV latent at the final resolution. Wire upstream through LTXVConcatAVLatent."),
                 io.Sampler.Input("sampler_obj"),
                 io.String.Input("sigmas_pipe", multiline=True, default=_DISTILLED_DEFAULT_SIGMAS_PIPE,
                                  tooltip="One sigma schedule per line; each line is one stage. Intermediate lines may stop at sigma>0 (trajectory segmentation: coarse-denoise -> upscale -> continue). If the next line's first sigma equals the previous line's last sigma, the noisy latent continues exactly; a jump re-noises fresh (keep jumps <= ~0.05). Only the LAST line must end at 0.0."),
-                io.String.Input("upscale_modes", default="external",
-                                 tooltip="Per-stage upscale mode, comma-separated matching sigmas_pipe lines (e.g. 'external,interpolate,vae_roundtrip'). Single value broadcasts to all stages. 'external' is only valid for stage 0."),
-                io.Vae.Input("vae_video", optional=True,
-                              tooltip="Required when any upscale_mode is 'interpolate' or 'vae_roundtrip'."),
-                io.LatentUpscaleModel.Input("upscale_model", optional=True, tooltip="Reserved."),
+                io.Combo.Input("upscale_model", options=["none", "fast"], default="fast",
+                                tooltip="none: every stage runs at the input (1.0) scale. fast: apply the per-stage scale chain so the model denoises at a coarser resolution in early stages and refines to full size in the last stage. The chain is derived from the number of sigmas_pipe lines."),
                 io.Float.Input("guidance_rescale", default=0.7, min=0.0, max=1.0, step=0.05,
                                 tooltip="SD3-style CFG rescale (Lin et al. 2024). 0 disables. Applied per stage."),
-                io.Boolean.Input("enforce_per_frame_path", default=False,
-                                  tooltip="Reject latents whose noise_mask forces has_spatial_mask=True; triggers per_frame_path in _prepare_timestep."),
                 io.Boolean.Input("enable_stg", default=False,
                                   tooltip="Auto-bundle Spatio-Temporal Guidance as a post_cfg_function for every stage."),
                 io.Boolean.Input("enable_modality_guidance", default=False,
@@ -380,11 +333,6 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                 _validate_av_samples(av_latent["samples"])
             except Exception as e:
                 return f"[ZLTXVideoTurboProgressive] av_latent: {e}"
-
-        if kwargs.get("enforce_per_frame_path"):
-            if av_latent is not None and _spatial_mask_present(av_latent):
-                return ("[ZLTXVideoTurboProgressive] enforce_per_frame_path=True requires a purely "
-                        "temporal noise_mask, but the supplied latent's noise_mask has spatial extent.")
 
         pipe_str = kwargs.get("sigmas_pipe") or ""
         try:
@@ -410,14 +358,6 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                 if s[0] > 1.0 + 1e-6 or s[0] < 0.0:
                     return (f"[ZLTXVideoTurboProgressive] sigmas_pipe stage {idx} first sigma must be in [0, 1], "
                             f"got {s[0]}.")
-        modes_str = kwargs.get("upscale_modes", "external")
-        try:
-            modes = _parse_upscale_modes(modes_str, n_stages)
-        except Exception as e:
-            return f"[ZLTXVideoTurboProgressive] upscale_modes: {e}"
-
-        if any(m == "external" for m in modes[1:]):
-            pass  # "external" between in-node stages is a no-op (no upscale); user may wire externally via separate node calls if desired
 
         return True
 
@@ -429,11 +369,8 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
         av_latent,
         sampler_obj,
         sigmas_pipe: str = _DISTILLED_DEFAULT_SIGMAS_PIPE,
-        upscale_modes: str = "external",
-        vae_video=None,
-        upscale_model=None,
+        upscale_model: str = "fast",
         guidance_rescale: float = 0.7,
-        enforce_per_frame_path: bool = False,
         enable_stg: bool = False,
         enable_modality_guidance: bool = False,
         stg_blocks: str = "29",
@@ -442,40 +379,56 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
     ) -> io.NodeOutput:
         import comfy.sample
         import comfy.utils
+        import comfy.nested_tensor
         import latent_preview
 
-        _ = upscale_model  # reserved, no-op
-        _ = enforce_per_frame_path  # validated above
-
         stages_sigmas = _parse_sigmas_pipe(sigmas_pipe)
-        stages_modes = _parse_upscale_modes(upscale_modes, len(stages_sigmas))
+        n_stages = len(stages_sigmas)
+        scale_chain = _stage_scale_chain(n_stages) if upscale_model == "fast" else [1.0] * n_stages
 
         _validate_av_samples(av_latent["samples"])
 
         current_latent = av_latent
-        for i, (stage_sigmas, mode) in enumerate(zip(stages_sigmas, stages_modes)):
-            if i > 0:
-                if mode in ("interpolate", "vae_roundtrip") and vae_video is None:
-                    raise ValueError(
-                        f"[ZLTXVideoTurboProgressive] stage {i} upscale_mode '{mode}' requires the "
-                        f"vae_video input; connect a VAE (e.g. from LTXVAddGuide / VAE Loader)."
-                    )
-                current_latent = _crop_guides(current_latent, guider, clear_conds=True)
-                if mode == "interpolate":
-                    current_latent = _upscale_interpolate(current_latent, vae_video)
-                elif mode == "vae_roundtrip":
-                    current_latent = _upscale_vae_roundtrip(current_latent, vae_video)
+        for i, (stage_sigmas, scale) in enumerate(zip(stages_sigmas, scale_chain)):
+            if scale != 1.0:
+                current_latent = {**current_latent,
+                                   "samples": _scale_video_stream(current_latent["samples"], scale)}
+                if current_latent.get("noise_mask") is not None:
+                    current_latent["noise_mask"] = _scale_video_stream(current_latent["noise_mask"], scale)
                 _validate_av_samples(current_latent["samples"])
 
             sigmas = torch.tensor(stage_sigmas, dtype=torch.float32)
             prev_end = stages_sigmas[i - 1][-1] if i > 0 else None
-            if prev_end is not None and prev_end > 1e-6 and abs(stage_sigmas[0] - prev_end) <= 1e-6:
-                # Exact trajectory continuation: under the flow-matching blend
-                # x = latent*(1-s0) + noise*s0, noise == latent is the identity,
-                # so the still-noisy latent passes through unchanged.
-                noise = current_latent["samples"]
+            exact_handoff = (
+                prev_end is not None
+                and prev_end > 1e-6
+                and abs(stage_sigmas[0] - prev_end) <= 1e-6
+            )
+
+            if i == 0:
+                latent_image = current_latent["samples"]
+                noise = comfy.sample.prepare_noise(latent_image, seed + i, None)
+            elif exact_handoff:
+                latent_image = current_latent["samples"]
+                noise = latent_image
             else:
-                noise = comfy.sample.prepare_noise(current_latent["samples"], seed + i, None)
+                video_x0, audio_x0 = _validate_av_samples(current_latent["samples"])
+                prev_sigma_end = float(stages_sigmas[i - 1][-1])
+                if prev_sigma_end > 1e-6:
+                    # Trajectory segmentation: the previous stage stopped at sigma>0.
+                    # Rescale the still-noisy latent back to its x0 estimate so the
+                    # handoff formula below operates on clean input.
+                    ms = model.model_sampling
+                    sigma_t = torch.tensor([prev_sigma_end], device=video_x0.device, dtype=video_x0.dtype)
+                    video_x0 = ms.calculate_input(sigma_t, video_x0)
+                    audio_x0 = ms.calculate_input(sigma_t, audio_x0)
+                sigma_next = float(stage_sigmas[0])
+                video_next, audio_next = _stage_handoff(
+                    video_x0, audio_x0, sigma_next, seed + i + 100
+                )
+                latent_image = comfy.nested_tensor.NestedTensor((video_next, audio_next))
+                noise = latent_image
+
             patched_model = cls._patch_model(
                 model=model,
                 stage_index=i,
@@ -489,7 +442,7 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
             denoise_mask = current_latent.get("noise_mask", None)
             out = guider.sample(
                 noise=noise,
-                latent_image=current_latent["samples"],
+                latent_image=latent_image,
                 sampler=sampler_obj,
                 sigmas=sigmas,
                 denoise_mask=denoise_mask,
@@ -498,16 +451,11 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                 seed=seed + i,
             )
             video, audio = _validate_av_samples(out)
-            import comfy.nested_tensor
             current_latent = {"samples": comfy.nested_tensor.NestedTensor((video, audio))}
             if denoise_mask is not None:
                 current_latent["noise_mask"] = denoise_mask
 
-        video, audio = _validate_av_samples(current_latent["samples"])
-        n_guides = _count_guide_frames(guider, video.shape)
-        print(f"[ZLTXVT] sampled_T={video.shape[2]} n_guides={n_guides} final_T={video.shape[2] - n_guides if video.shape[2] > n_guides else video.shape[2]} pixel_frames={(video.shape[2] - n_guides - 1) * 8 + 1 if video.shape[2] > n_guides else 'n/a'}")
         current_latent = _crop_guides(current_latent, guider)
-
         return io.NodeOutput({"samples": current_latent["samples"]})
 
     @classmethod
@@ -529,18 +477,17 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                 patched_model.set_model_sampler_post_cfg_function(
                     _make_rescale_cfg_post_cfg(guidance_rescale)
                 )
-            except Exception:
+            except Exception as e:
+                print(f"[ZLTXVT] WARNING: guidance_rescale post_cfg not applied ({e}); stage {stage_index} runs unpatched")
                 patched_model = model
 
         if enable_stg:
             try:
                 if patched_model is model:
                     patched_model = model.clone()
-                patched_model.set_model_sampler_post_cfg_function(
-                    _make_stg_post_cfg(stg_blocks, scale=1.0, start_percent=0.0, end_percent=0.5)
-                )
-            except Exception:
-                pass
+                patched_model.set_model_sampler_post_cfg_function(_make_stg_post_cfg(stg_blocks))
+            except Exception as e:
+                print(f"[ZLTXVT] WARNING: STG post_cfg not applied ({e}); stage {stage_index} runs without STG")
 
         if enable_modality_guidance and not math.isclose(modality_scale, 1.0):
             try:
@@ -549,7 +496,7 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                 patched_model.set_model_sampler_post_cfg_function(
                     _make_modality_post_cfg(modality_scale)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ZLTXVT] WARNING: modality guidance post_cfg not applied ({e}); stage {stage_index} runs without it")
 
         return patched_model

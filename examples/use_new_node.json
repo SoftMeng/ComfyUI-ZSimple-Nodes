@@ -1264,12 +1264,6 @@
           "link": 591
         },
         {
-          "name": "vae_video",
-          "shape": 7,
-          "type": "VAE",
-          "link": 589
-        },
-        {
           "name": "upscale_model",
           "shape": 7,
           "type": "LATENT_UPSCALE_MODEL",
@@ -1290,7 +1284,7 @@
       },
       "widgets_values": [
         "[1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0]\n[0.909375, 0.725, 0.4219, 0.0]",
-        "external",
+        "fast",
         0.7,
         false,
         false,
