@@ -47,33 +47,27 @@ CRITICAL: Your response IS the prompt paragraph. Start the first word with the v
 # H3 — sourced from MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt.
 # Three core fields: integrated_multimodal_description, overall_soundscape,
 # non_diegetic_music. Shot-based timeline. Time anchors like "0.00 seconds".
-_H3_T2V_SYSTEM_PROMPT = """Write an H3 video prompt with three labelled fields in this exact order:
-
-integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed)
+_H3_T2V_SYSTEM_PROMPT = """integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed)
 overall_soundscape: ambient and physical sounds
-non_diegetic_music: background music (or omit if none)
-"""
+non_diegetic_music: background music (or omit if none)"""
 
-_H3_I2V_SYSTEM_PROMPT = """Write an H3 image-to-video prompt. Output starts with the alignment line, then three labelled fields:
-
-For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+_H3_I2V_SYSTEM_PROMPT = """For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
 
 integrated_multimodal_description: ... (anchored to the first frame, then action develops forward)
 overall_soundscape: ...
-non_diegetic_music: ... (or omit if none)
-"""
+non_diegetic_music: ... (or omit if none)"""
 
-# Z-Image.
-_ZIMAGE_T2I_SYSTEM_PROMPT = """Write a Z-Image generation prompt: one paragraph starting with a style phrase ("A cinematic photograph of", "A 3D render of", "A watercolor illustration of", etc.) and describing the subject with concrete details (clothing, colors, materials, lighting, framing, composition).
-"""
+# Z-Image. Empty system prompt — the user's prompt is the only signal.
+# Previous attempts at task-describing system prompts caused small LLMs
+# to plan-then-write a preamble. With an empty system message, the LLM
+# behaves more like a continuation model and writes the prompt directly.
+_ZIMAGE_T2I_SYSTEM_PROMPT = """"""
 
 # Krea-2.
-_KREA2_T2I_SYSTEM_PROMPT = """Expand the request into one Krea-2 image-generation prompt paragraph. Start with a style phrase. Describe the subject with concrete, observable details (clothing, colors, materials, lighting, composition). Preserve every subject, action, color the user named. If they specified a medium ("photo of", "painting of", "3D render of"), honor it.
-"""
+_KREA2_T2I_SYSTEM_PROMPT = """"""
 
 # Krea-2 Edit.
-_KREA2_EDIT_SYSTEM_PROMPT = """Write a Krea-2 Edit instruction: one paragraph that (1) opens with a grounding sentence describing the current image state (subject, setting, lighting, style), then (2) states the desired change as a concrete imperative ("change X to Y", "replace A with B", "remove C").
-"""
+_KREA2_EDIT_SYSTEM_PROMPT = """"""
 
 
 
