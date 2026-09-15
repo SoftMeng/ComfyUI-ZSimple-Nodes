@@ -180,7 +180,9 @@ def test_each_template_is_non_empty():
 def test_each_template_length_in_safe_range():
     for (model, mode), tmpl in _BUILTIN_TEMPLATES.items():
         words = len(tmpl.split())
-        assert 20 <= words <= 800, f"{model}/{mode} template has {words} words; expected 20-800"
+        # Z-Image T2I template has grown (~700 words) to support bilingual
+        # examples; H3 is the smallest at 133 words. Lower bound 50 covers all.
+        assert 50 <= words <= 1000, f"{model}/{mode} template has {words} words; expected 50-1000"
 
 
 # ---------------------------------------------------------------------------
