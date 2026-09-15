@@ -6,6 +6,7 @@ from .nodes.z_simple_anthropic_agent import ZSimpleAnthropicAgent
 from .nodes.z_simple_openai_agent import ZSimpleOpenAIAgent
 from .nodes.zimage_turbo_progressive import ZImageTurboProgressive
 from .nodes.ltx_video_turbo_progressive import ZLTXVideoTurboProgressive
+from .nodes.prompt_enhance_plus import PromptEnhancePlus
 
 NODE_CLASS_MAPPINGS = {
     "RandomNumberPlus": RandomNumberPlus,
@@ -16,6 +17,7 @@ NODE_CLASS_MAPPINGS = {
     "ZSimpleAnthropicAgent": ZSimpleAnthropicAgent,
     "ZSimpleOpenAIAgent": ZSimpleOpenAIAgent,
     "ZLTXVideoTurboProgressive": ZLTXVideoTurboProgressive,
+    "PromptEnhancePlus": PromptEnhancePlus,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -27,6 +29,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ZSimpleAnthropicAgent": "ZSimple Anthropic Agent",
     "ZSimpleOpenAIAgent": "ZSimple OpenAI Agent",
     "ZLTXVideoTurboProgressive": "Z-LTX Video Turbo Progressive",
+    "PromptEnhancePlus": "Prompt Enhance Plus",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
