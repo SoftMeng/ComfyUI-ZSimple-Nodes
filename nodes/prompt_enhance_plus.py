@@ -51,6 +51,8 @@ Match this captioning style precisely:
 If the user wrote in another language, produce the English caption of the same content. Output ONLY the caption text — no JSON, no preamble.
 
 AESTHETIC QUALITY (in addition to the above, without breaking the objective caption style): render the described scene with strong visual production value — cinematic, film-grade color and contrast, beautiful natural lighting, crisp fine detail and texture, pleasing composition and depth. Weave these quality descriptors naturally into the same observable prose (e.g. "warm cinematic lighting", "richly saturated film-grade color", "crisp high-resolution detail") — describe how the exact requested scene LOOKS at its most visually striking, never adding new objects or actions. Keep everything else (framing triple, soundscape, chronological single paragraph, faithfulness) exactly as specified.
+
+CRITICAL: Output ONLY the caption paragraph itself. Do not include any thinking, planning, reasoning, or explanation before or after the caption. No "Okay", "Let me think", "First I need to" — start directly with the visual description.
 """
 
     _LTX25_I2V_SYSTEM_PROMPT = """You are given a REFERENCE IMAGE (the exact first frame of the video) and a user's short image-to-video request. Write a single, highly detailed audio-visual caption describing the video that BEGINS from this exact reference image and best fulfills that request, in the EXACT style of the training captions used for this video model. The generated video is scored against the user's ORIGINAL request, so preserve every element the user stated; expand faithfully into the full caption style without contradicting or dropping anything they asked for.
@@ -80,6 +82,8 @@ Match this captioning style precisely:
 If the user wrote in another language, produce the English caption of the same content. Output ONLY the caption text — no JSON, no preamble.
 
 AESTHETIC QUALITY (in addition to the above, without breaking the objective caption style or contradicting the reference image): render the described scene with strong visual production value — cinematic, film-grade color and contrast, beautiful natural lighting, crisp fine detail and texture, pleasing composition and depth. Weave these quality descriptors naturally into the same observable prose (e.g. "warm cinematic lighting", "richly saturated film-grade color", "crisp high-resolution detail") — describe how the exact requested scene, starting from this frame, LOOKS at its most visually striking, never adding new objects or actions and never contradicting the first frame. Keep everything else (first-frame grounding, framing triple, soundscape, chronological single paragraph, faithfulness) exactly as specified.
+
+CRITICAL: Output ONLY the caption paragraph itself. Do not include any thinking, planning, reasoning, or explanation before or after the caption. No "Okay", "Let me think", "First I need to" — start directly with the visual description.
 """
 
 # H3 — sourced from MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt.
@@ -96,6 +100,8 @@ overall_soundscape: Summarize ambient sound, physical action sounds (footsteps, 
 non_diegetic_music: Background music that characters cannot hear and only the audience hears. Specify type, mood, tempo, and any volume changes. Omit if no music.
 
 Format strictly: three lines, each starting with the field name and a colon. Do NOT prepend any instruction text. Do NOT use markdown.
+
+CRITICAL: Output ONLY the three fields. Do not include any thinking, planning, reasoning, or explanation before or after them. No "Okay", "Let me think", "First I need to" — start directly with the first field name.
 """
 
 _H3_I2V_SYSTEM_PROMPT = """You write video generation prompts for the H3 video model given a first-frame reference image. The model expects a STRUCTURED prompt with one alignment instruction followed by three labelled fields. Output ONLY the instruction and the three fields — no extra prose.
@@ -113,6 +119,8 @@ overall_soundscape: Ambient sound, physical action sounds, non-verbal human soun
 non_diegetic_music: Type, mood, tempo, volume changes. Omit if none.
 
 Format strictly: alignment line, blank line, then three lines each starting with the field name and a colon. Do NOT use markdown.
+
+CRITICAL: Output ONLY the alignment line and the three fields. Do not include any thinking, planning, reasoning, or explanation before or after them. No "Okay", "Let me think", "First I need to" — start directly with the alignment line.
 """
 
 # Z-Image — natural language + style prefix + photographic terminology.
@@ -131,6 +139,8 @@ Output a single expanded prompt paragraph that:
 7. If the user asks for visible text, quotes the exact text inside quotation marks.
 
 Faithfulness: preserve every subject, action, color, and spatial relationship the user named. Do not invent new objects, characters, or props unless the user clearly implies them. Write one cohesive paragraph — no bullets, no JSON, no markdown.
+
+CRITICAL: Output ONLY the final prompt paragraph. Do not include any thinking, planning, reasoning, or explanation before or after it. No "Okay", "Let me think", "First I need to" — start directly with the style/medium phrase.
 """
 
 # Krea-2 — direct reuse of the official expansion prompt from
@@ -155,6 +165,8 @@ Follow these rules strictly:
 7. **Respect Existing Detail:** If the user's prompt is already detailed, lightly polish and finalize rather than heavily expanding — preserve their phrasing and direction.
 8. **Respect the Human Form:** Treat depictions of people with dignity. Assume clothing covers genitals and intimate anatomy.
 9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. "photo of", "photograph of", "illustration of", "painting of", "sketch of", "3D render of"), honor it. Do not pivot to a different medium to avoid difficulty — match the user's stated intent.
+
+CRITICAL: Output ONLY the final prompt paragraph. Do not include any thinking, planning, reasoning, or explanation before or after it. No "Okay", "Let me think", "First I need to" — start directly with the style/medium phrase.
 """
 
 # Krea-2 Edit — instruction-following format with reference image grounding.
@@ -173,6 +185,8 @@ Output a single expanded editing instruction paragraph that:
 7. Faithfulness: do not invent edits the user did not request. Preserve everything else.
 
 Format: one cohesive paragraph starting with a brief grounding sentence, followed by the editing instruction.
+
+CRITICAL: Output ONLY the editing instruction paragraph. Do not include any thinking, planning, reasoning, or explanation before or after it. No "Okay", "Let me think", "First I need to" — start directly with the grounding sentence.
 """
 
 
@@ -253,19 +267,80 @@ def _resolve_mode(mode: str, *, image, video, target_model: str) -> str:
     return "I2V" if has_visual else "T2V"
 
 
-def _strip_think_blocks(text: str) -> str:
-    """Remove <think>...</think> blocks; tolerate an unclosed trailing block.
+_REASONING_PREFIXES = (
+    "okay,",
+    "ok,",
+    "let me",
+    "first,",
+    "first i",
+    "the user",
+    "i need to",
+    "i should",
+    "i will",
+    "thinking:",
+    "step 1:",
+    "step 2:",
+    "step 3:",
+    "to begin",
+    "alright,",
+)
 
-    Closed blocks are deleted entirely. An unclosed <think> is truncated to
-    the end of its current line so any subsequent visible output is preserved.
+
+def _strip_think_blocks(text: str) -> str:
+    """Strip reasoning-style preamble; return only the final answer paragraph.
+
+    1. Closed <think>...</think> blocks are deleted entirely.
+    2. An unclosed <think> is truncated to end-of-line.
+    3. If the result still starts with a reasoning-style sentence
+       (small-model LLM that ignored the system prompt's "no thinking"
+       instruction), scan ahead for the first paragraph that is itself
+       a complete final answer, and return from there.
+
+    Heuristics for "first final answer paragraph":
+      - Contains 6+ words AND at least one concrete noun-anchor
+        (capitalized name, style phrase, or quoted text).
     """
+    # 1) closed thinking tags
     while True:
         m = re.search(r"<think>.*?</think>", text, flags=re.DOTALL)
         if not m:
             break
         text = text[: m.start()] + text[m.end():]
+
+    # 2) unclosed thinking tag (truncate to end of current line)
     text = re.sub(r"<think>[^\n]*", "", text)
-    return text.strip()
+
+    text = text.strip()
+    if not text:
+        return text
+
+    # 3) plain reasoning preamble (small models ignore the no-thinking rule)
+    lowered = text.lower()
+    if not any(lowered.startswith(p) for p in _REASONING_PREFIXES):
+        return text
+
+    # Split into paragraphs; the first one is the reasoning preamble (we
+    # already detected it starts with a reasoning prefix). Look for the
+    # final answer in the SUBSEQUENT paragraphs only.
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if len(paragraphs) <= 1:
+        return text
+
+    def _looks_like_answer(para: str) -> bool:
+        if len(para.split()) < 6:
+            return False
+        if re.search(r'"[^"]{2,}"', para):
+            return True
+        if re.search(r"[A-Z][a-z]+", para):
+            return True
+        return False
+
+    for p in paragraphs[1:]:
+        if _looks_like_answer(p):
+            return p
+    # No subsequent paragraph qualifies; fall back to the LAST paragraph
+    # (often the actual answer in plain reasoning + final combined output).
+    return paragraphs[-1]
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +396,7 @@ class PromptEnhancePlus(io.ComfyNode):
                     default="",
                     tooltip="Override the built-in system prompt with your own. Leave empty to use the built-in template.",
                 ),
-                io.Int.Input("max_length", default=256, min=64, max=32768, step=32),
+                io.Int.Input("max_length", default=512, min=64, max=32768, step=32),
                 io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.01),
                 io.Int.Input("top_k", default=64, min=0, max=1000, step=1),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),

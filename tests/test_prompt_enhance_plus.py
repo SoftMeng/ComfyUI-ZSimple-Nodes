@@ -176,7 +176,7 @@ def test_each_template_is_non_empty():
 def test_each_template_length_in_safe_range():
     for (model, mode), tmpl in _BUILTIN_TEMPLATES.items():
         words = len(tmpl.split())
-        assert 50 <= words <= 700, f"{model}/{mode} template has {words} words; expected 50-700"
+        assert 50 <= words <= 800, f"{model}/{mode} template has {words} words; expected 50-800"
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +306,53 @@ def test_strip_think_block_unclosed():
 
 def test_strip_think_block_no_block():
     assert _strip_think_blocks("plain text") == "plain text"
+
+
+# ---------------------------------------------------------------------------
+# Plain-reasoning preamble stripping (small LLM ignores "no thinking" rule)
+# ---------------------------------------------------------------------------
+
+def test_strip_plain_reasoning_preamble_extracts_paragraph():
+    """User's actual symptom: LLM emits 'Okay, let me...' reasoning followed
+    by the final answer paragraph. We want only the final answer."""
+    text = (
+        "Okay, let me try to figure out how to approach this. "
+        "The user wants me to generate an image generation prompt for Z-Image. "
+        "First, I need to make sure I understand all the requirements.\n\n"
+        "A cinematic photograph of a woman in a flowing red silk dress "
+        "standing in a sunlit cityscape, golden hour lighting, medium shot, "
+        "eye-level camera angle, soft background bokeh with skyscrapers."
+    )
+    out = _strip_think_blocks(text)
+    assert not out.lower().startswith("okay")
+    assert "cinematic photograph" in out
+    assert "First, I need to" not in out
+
+
+def test_strip_plain_reasoning_starts_with_capitalized_phrase():
+    text = "First, the user wants a model. \n\nModel is a slender figure."
+    out = _strip_think_blocks(text)
+    assert "Model" in out or "slender" in out
+    assert not out.lower().startswith("first,")
+
+
+def test_strip_plain_reasoning_keeps_single_paragraph_input_unchanged():
+    """If the LLM output is a single paragraph that just happens to start
+    with a reasoning-style word, leave it alone — heuristic would have
+    nothing to pick from."""
+    text = "The user wants a sunset over the ocean, warm colors, soft waves."
+    assert _strip_think_blocks(text) == text
+
+
+def test_strip_think_combined_with_plain_reasoning():
+    text = (
+        "<think>internal chain of thought</think>"
+        "Okay, let me think. The user asked for X. \n\n"
+        "A vibrant oil painting of a mountain peak at sunrise."
+    )
+    out = _strip_think_blocks(text)
+    assert "vibrant oil painting" in out
+    assert "Okay" not in out
 
 
 # ---------------------------------------------------------------------------
