@@ -704,7 +704,7 @@ model 字段填对应端点支持的模型名即可。
 | `max_length` / `temperature` / `top_k` / `top_p` / `seed` | 标准 LLM 采样参数 |
 
 > [!NOTE]
-> **输入语言**：可以传中文或英文 prompt（如「美女模特」或 "a beautiful model"）。Z-Image / LTX 2.5 / H3 / Krea-2 训练语料以**英文为主**，扩写后会输出英文 prompt（因配套 text encoder Qwen3-4B 是中英双语，英文 caption 质量更好）。想要中文输出扩写，用 `custom_template` 粘贴中文指令 + 示例。
+> **输入/输出语言**：Z-Image 是 **Tongyi-MAI（阿里达摩院）** 发布的双语模型，HF 官方 model card 一再强调 *"bilingual text rendering (English & Chinese)"*。中文 / 英文 prompt 输入都能扩写，中英双语 caption 输出都支持。中文 prompt 完全可以直接传（"美女模特"），扩写会输出中英混合或中文（取决于扩写器 LLM 的输出偏好）；英文 prompt（"a beautiful model"）会输出更详细的英文 caption（与官方示例一致）。
 
 > [!TIP]
 > 内置 system prompt 以可编辑的 markdown 文件存放在 `model_system_prompt/` 文件夹下（如 `zimage_t2i.md`、`h3_t2v.md`），可直接修改文件内容自定义内置模板，无需改代码。
