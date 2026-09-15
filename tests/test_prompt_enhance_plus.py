@@ -180,9 +180,10 @@ def test_each_template_is_non_empty():
 def test_each_template_length_in_safe_range():
     for (model, mode), tmpl in _BUILTIN_TEMPLATES.items():
         words = len(tmpl.split())
-        # Z-Image T2I template has grown (~700 words) to support bilingual
-        # examples; H3 is the smallest at 133 words. Lower bound 50 covers all.
-        assert 50 <= words <= 1000, f"{model}/{mode} template has {words} words; expected 50-1000"
+        chars = len(tmpl)
+        # 中文模板按空白切词会少算，按字符上限收尾更准。H3 i2v 是最小模板 ~70词 / ~530 chars。
+        assert 30 <= words <= 1500, f"{model}/{mode} template has {words} words; expected 30-1500"
+        assert 200 <= chars <= 8000, f"{model}/{mode} template has {chars} chars; expected 200-8000"
 
 
 # ---------------------------------------------------------------------------
@@ -290,17 +291,48 @@ def test_format_chat_qwen_returns_bare_content_for_tokenizer_wrap():
     assert "user prompt" in out
 
 
-def test_format_chat_image_marker_inserted():
-    out = _format_chat("SYS", "u", "img", "qwen")
-    # qwen35.py consumes the <image> placeholder; the tokenizer-side
-    # vision tags (<|vision_start|>) are added by llama_template_images
-    # inside the tokenizer, not in our formatted text.
-    assert "<image>" in out
+def test_format_chat_never_emits_image_placeholders():
+    """B方案：_format_chat 不再写任何 image 占位符。
+    vision token 由 clip.tokenize(image=image) 自己注入。
+    qwen: <|vision_start|><|image_pad|><|vision_end|>
+    gemma4: <start_of_image>
+    gemma3: <start_of_image>"""
+    for family in ("qwen", "gemma4", "gemma3"):
+        out = _format_chat("SYS", "u", "img", family)
+        assert "<image>" not in out, f"{family} still emits <image>"
+        assert "<image_soft_token>" not in out, f"{family} still emits <image_soft_token>"
+        assert "<|image|>" not in out, f"{family} still emits <|image|>"
 
 
-def test_format_chat_no_image_marker_when_no_image():
-    out = _format_chat("SYS", "u", None, "qwen")
-    assert "<image>" not in out
+def test_format_chat_image_does_not_change_text():
+    """image 参数不应改变 _format_chat 输出文本（placeholders 一律移除）。"""
+    base_q = _format_chat("SYS", "u", None, "qwen")
+    with_img = _format_chat("SYS", "u", "img", "qwen")
+    assert base_q == with_img
+
+    base_g3 = _format_chat("SYS", "u", None, "gemma3")
+    with_img_g3 = _format_chat("SYS", "u", "img", "gemma3")
+    assert base_g3 == with_img_g3
+
+    base_g4 = _format_chat("SYS", "u", None, "gemma4")
+    with_img_g4 = _format_chat("SYS", "u", "img", "gemma4")
+    assert base_g4 == with_img_g4
+
+
+def test_execute_still_passes_image_kwarg_to_tokenize():
+    """image tensor 必须仍由 clip.tokenize 接收（vision token 注入归 tokenizer）。"""
+    clip = _FakeCLIP(name="qwen2.5-vl-3b", response="ok")
+    PromptEnhancePlus.execute(
+        clip, prompt="test", target_model="LTX2.5", mode="T2V",
+        max_length=64, temperature=0.7, top_k=64, top_p=0.95, seed=0,
+        image="img-tensor",
+    )
+    assert clip.last_tokenize_kwargs["image"] == "img-tensor"
+    # vision token 由 tokenizer 自己处理；我们送入的字符串不应含任何 image 标记
+    sent_text = clip.last_tokenize_kwargs["tokens"]
+    assert "<image>" not in sent_text
+    assert "<|image|>" not in sent_text
+    assert "<image_soft_token>" not in sent_text
 
 
 # ---------------------------------------------------------------------------
@@ -344,9 +376,12 @@ def test_format_chat_qwen_no_think_prefix_absent_when_thinking_true():
 
 
 def test_format_chat_qwen_no_think_prefix_with_image():
+    """B方案：image 不再改 _format_chat 输出；/no_think 仍在原位。"""
     out = _format_chat("SYS", "u", "img", "qwen", thinking=False)
     assert "/no_think" in out
-    assert "<image>" in out
+    assert "<image>" not in out  # 占位符移除
+    # 与无 image 的输出一致（image kwarg 不影响文本）
+    assert out == _format_chat("SYS", "u", None, "qwen", thinking=False)
 
 
 def test_format_chat_gemma3_untouched_by_no_think():

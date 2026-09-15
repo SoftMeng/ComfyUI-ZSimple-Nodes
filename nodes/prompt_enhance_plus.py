@@ -99,30 +99,27 @@ def _format_chat(
 
     For gemma3 / unknown (no native thinking mode), the existing
     <start_of_turn>...<end_of_turn> format is harmless and we keep it.
+
+    Image handling: we never embed image placeholders in the text.
+    The image tensor is passed to clip.tokenize(image=image), and the
+    tokenizer (qwen35 / gemma4 / gemma3) appends the correct vision
+    tokens itself. Embedding image-soft placeholders here is wrong:
+    qwen expects <|vision_start|><|image_pad|><|vision_end|>, gemma4
+    expects <start_of_image>, gemma3 expects <start_of_image> — none
+    of which are raw strings we should hand-write.
     """
-    has_image = image is not None
     if family == "gemma4":
-        media = "<|image><|image|><image|>\n\n" if has_image else ""
         return (
             f"<|turn>system\n{system}<turn|>\n"
-            f"<|turn>user\n{media}{user_text}<turn|>\n"
+            f"<|turn>user\n{user_text}<turn|>\n"
             f"<|turn>model\n"
         )
     if family == "qwen":
-        # /no_think is a training-time soft switch built into Qwen3-series
-        # models: the model learned to skip its reasoning phase when it sees
-        # this token at the start of the user turn. It works independently
-        # of the chat-template prime the tokenizer injects (qwen3vl.py:181),
-        # so we stack both when thinking=False.
         prefix = "" if thinking else "/no_think "
-        if image is not None:
-            return f"{system}\n\n<image>{prefix}{user_text}"
         return f"{system}\n\n{prefix}{user_text}"
-    # Default to gemma3 format.
-    media = "\n<image_soft_token>\n" if has_image else ""
     return (
         f"<start_of_turn>system\n{system}<end_of_turn>\n"
-        f"<start_of_turn>user\n{media}\nUser Raw Input Prompt: {user_text}.<end_of_turn>\n"
+        f"<start_of_turn>user\nUser Raw Input Prompt: {user_text}.<end_of_turn>\n"
         f"<start_of_turn>model\n"
     )
 
