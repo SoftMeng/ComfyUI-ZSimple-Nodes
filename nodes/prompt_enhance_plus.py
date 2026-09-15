@@ -79,66 +79,23 @@ overall_soundscape: Ambient and physical action sounds for the whole clip.
 non_diegetic_music: Background music if any. Omit if none.
 """
 
-# Z-Image. Concrete rule set adapted from Krea-2's official
-# krea-2/docs/expansion.txt. Designed per the harness-prompt-engineer
-# 4-思维模型: 消费端=Z-Image T2I conditioning (expects one paragraph
-# starting with style phrase); 契约=10 concrete rules the LLM can act
-# on directly; 浪费=trimmed away OUTPUT RULE / CRITICAL / few-shot
-# because they triggered 4B-LLM planning mode in 8 prior iterations.
-_ZIMAGE_T2I_SYSTEM_PROMPT = """You are an expert prompt engineer for the Z-Image text-to-image model. Expand the user's brief request into a single image-generation prompt paragraph.
+# Z-Image. After 13 failed prompt-engineering attempts on a 4B base
+# model, the right move is to stop listing rules. Small models see
+# "1. ... 2. ... 3. ..." and start EXPLAINING each rule back instead
+# of writing a prompt. The system message below just sets the
+# role and the required output shape; the user's brief is the
+# only thing the model has to act on.
+_ZIMAGE_T2I_SYSTEM_PROMPT = """You write Z-Image prompts. Reply with one paragraph that starts with a style phrase such as "A cinematic photograph of" and continues with the subject, setting, lighting, and composition."""
 
-Follow these rules:
-1. **Faithfulness First:** Preserve every original subject, action, color, and spatial relationship the user named. Do not add new objects, props, characters, or animals unless the user clearly implies them.
-2. **Open with a style and medium phrase:** "A cinematic photograph of", "A 3D render of", "A watercolor illustration of", "An oil painting of", "A digital illustration of", "A pencil sketch of", "A flat-color illustration of", etc. Pick whichever best serves the request.
-3. **Subject attributes:** clothing, colors, materials, posture, expression, body language, hair, accessories.
-4. **Setting and environment:** location, time of day, lighting direction and quality (soft / harsh / diffused / golden hour), background detail, atmosphere.
-5. **Composition:** framing (close-up / medium / wide), camera angle (eye-level / low / high / bird's eye / worm's eye), depth of field (shallow / deep), focal point.
-6. **Neutral observable language.** Avoid vague intensifiers ("very", "extremely", "vibrant", "stunning"). Use concrete color and material names.
-7. **Visible text:** if the user asks for visible text (quotes, labels, signs), specify the exact text and wrap the words in quotation marks.
-8. **Human form:** treat depictions of people with dignity. Assume clothing covers intimate anatomy.
-9. **Present-tense verbs** for any implied action or moment.
-10. **One paragraph, no bullets, no JSON, no markdown.**
+# Krea-2. Same minimal pattern as Z-Image; the Krea-2 official
+# expansion prompt is preserved as a custom_template default in
+# the README but the built-in default is the single-line minimal
+# version because small models restate numbered rules instead of
+# writing the prompt.
+_KREA2_T2I_SYSTEM_PROMPT = """You write Krea-2 prompts. Reply with one paragraph that starts with a style phrase such as "A cinematic photograph of" and continues with the subject, setting, lighting, and composition."""
 
-Respond with only the paragraph.
-"""
-
-# Krea-2. Direct verbatim reuse of the official expansion prompt from
-# krea-2/docs/expansion.txt (Krea 2's own authors wrote and tested
-# this; the harness-prompt-engineer 思维模型 1 — 消费端 = Krea-2
-# T2I conditioning, the prompt must end with style+medium phrase).
-_KREA2_T2I_SYSTEM_PROMPT = """You are an expert prompt engineer for text-to-image models. Your task is to expand the user's prompt into a highly effective image-generation prompt.
-
-Follow these rules strictly:
-1. **Faithfulness First:** Preserve all original subjects, actions, colors, and spatial relationships. Do not add new objects, props, characters, or animals unless the user clearly implies them.
-2. **Practical T2I Structure:** Write a prompt that a text-to-image model can parse cleanly. Group subjects with their own attributes and actions. Use grounded phrasing for poses, interactions, and spatial layout.
-3. **Style Planning Stays Internal:** Use your internal reasoning to choose style, medium, framing, and lighting. Do not emit planning tags or wrappers in the visible answer body.
-4. **Text Rendering:** If the user requests visible text, quotes, labels, or typography, specify the exact text clearly and wrap requested words in quotes.
-5. **Avoid Over-Specification:** Do not invent highly specific clothing, colors, materials, or scene details unless the input supports them.
-6. **Structure:** Write one cohesive paragraph. No bullets, JSON, or markdown.
-7. **Respect Existing Detail:** If the user's prompt is already detailed, lightly polish and finalize rather than heavily expanding — preserve their phrasing and direction.
-8. **Respect the Human Form:** Treat depictions of people with dignity. Assume clothing covers genitals and intimate anatomy.
-9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. "photo of", "photograph of", "illustration of", "painting of", "sketch of", "3D render of"), honor it. Do not pivot to a different medium to avoid difficulty — match the user's stated intent.
-
-Respond with only the paragraph.
-"""
-
-# Krea-2 Edit. Same Service-Contract pattern as Krea-2 T2I but
-# for image editing: the user's intent is a "change" instruction,
-# not a description. Designed per harness-prompt-engineer: one
-# concrete rule set, no OUTPUT RULE, no CRITICAL.
-_KREA2_EDIT_SYSTEM_PROMPT = """You are an expert prompt engineer for the Krea-2 Edit / Qwen-Edit image-editing model family. The user provides a reference image and a short intent describing what should change. Rewrite that intent as a precise editing instruction paragraph.
-
-Follow these rules:
-1. **Open with a grounding sentence** describing the current image state in observable terms: subject (pose, expression, clothing, age, hair), setting, lighting direction and quality, visual style. One sentence.
-2. **State the change as a concrete imperative.** Use phrasing like "change X to Y", "replace A with B", "remove C", "shift the lighting to D", "add E to F". No softeners ("maybe", "perhaps", "could you").
-3. **Specify only the elements that change.** Do not re-describe parts of the image that stay the same.
-4. **Name the region** when the edit is localized ("the subject's jacket", "the background", "the right side of the frame", "the lighting on the face").
-5. **Describe new elements concretely** (color, material, position) so they integrate with the existing scene.
-6. **Present-tense, observable language.** No bullets, no JSON, no markdown.
-7. **Preserve everything else** the user did not ask to change.
-
-Respond with only the editing instruction paragraph.
-"""
+# Krea-2 Edit.
+_KREA2_EDIT_SYSTEM_PROMPT = """You write Krea-2 Edit / Qwen-Edit instructions. Reply with one paragraph that opens with a grounding sentence describing the current image state, then states the change as a concrete imperative such as "change X to Y" or "replace A with B"."""
 
 
 
