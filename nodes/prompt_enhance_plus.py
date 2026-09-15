@@ -306,19 +306,69 @@ _REASONING_PREFIXES = (
 )
 
 
+_REASONING_KEYWORDS = (
+    "i need to",
+    "i should",
+    "i will",
+    "i'll",
+    "i must",
+    "let's",
+    "let me",
+    "maybe",
+    "perhaps",
+    "the user",
+    "the user wants",
+    "user wants",
+    "user asked",
+    "user didn't",
+    "user did not",
+    "user specified",
+    "they want",
+    "they need",
+    "first,",
+    "first i",
+    "next,",
+    "then,",
+    "finally,",
+    "since the user",
+    "as the user",
+    "given the",
+    "consider",
+    "note:",
+    "step 1:",
+    "step 2:",
+    "step 3:",
+    "to begin",
+    "thinking:",
+    "thought:",
+    "reasoning:",
+    "okay,",
+    "ok,",
+    "alright,",
+    "so the user",
+)
+
+
+def _sentence_looks_like_reasoning(sentence: str) -> bool:
+    """True if the sentence reads like model reasoning rather than the
+    expanded prompt answer."""
+    lowered = sentence.lower().strip()
+    if not lowered:
+        return True
+    return any(kw in lowered for kw in _REASONING_KEYWORDS)
+
+
 def _strip_think_blocks(text: str) -> str:
-    """Strip reasoning-style preamble; return only the final answer paragraph.
+    """Strip reasoning-style preamble; return only the final answer.
 
-    1. Closed <think>...</think> blocks are deleted entirely.
-    2. An unclosed <think> is truncated to end-of-line.
-    3. If the result still starts with a reasoning-style sentence
-       (small-model LLM that ignored the system prompt's "no thinking"
-       instruction), scan ahead for the first paragraph that is itself
-       a complete final answer, and return from there.
-
-    Heuristics for "first final answer paragraph":
-      - Contains 6+ words AND at least one concrete noun-anchor
-        (capitalized name, style phrase, or quoted text).
+    Strategy (defense in depth):
+      1. Closed <think>...</think> blocks are deleted.
+      2. Unclosed <think> truncated to end of line.
+      3. If output starts with a reasoning prefix, split into sentences and
+         return from the first non-reasoning sentence. Falls back to the
+         longest non-reasoning sentence if no clean "answer" sentence is
+         found. Falls back to the original text if every sentence is
+         reasoning.
     """
     # 1) closed thinking tags
     while True:
@@ -334,33 +384,28 @@ def _strip_think_blocks(text: str) -> str:
     if not text:
         return text
 
-    # 3) plain reasoning preamble (small models ignore the no-thinking rule)
     lowered = text.lower()
     if not any(lowered.startswith(p) for p in _REASONING_PREFIXES):
         return text
 
-    # Split into paragraphs; the first one is the reasoning preamble (we
-    # already detected it starts with a reasoning prefix). Look for the
-    # final answer in the SUBSEQUENT paragraphs only.
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    if len(paragraphs) <= 1:
-        return text
+    # 3) split into sentences; keep the period/whitespace as the splitter
+    # so the rebuilt answer is grammatically correct.
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    parts = [p for p in parts if p.strip()]
 
-    def _looks_like_answer(para: str) -> bool:
-        if len(para.split()) < 6:
-            return False
-        if re.search(r'"[^"]{2,}"', para):
-            return True
-        if re.search(r"[A-Z][a-z]+", para):
-            return True
-        return False
+    # First pass: find first sentence that doesn't look like reasoning.
+    for p in parts:
+        if not _sentence_looks_like_reasoning(p):
+            return " ".join(parts[parts.index(p):]).strip()
 
-    for p in paragraphs[1:]:
-        if _looks_like_answer(p):
-            return p
-    # No subsequent paragraph qualifies; fall back to the LAST paragraph
-    # (often the actual answer in plain reasoning + final combined output).
-    return paragraphs[-1]
+    # Second pass: return the longest sentence (often the actual answer
+    # even when the model used reasoning-y openers throughout).
+    if parts:
+        longest = max(parts, key=len)
+        if len(longest.split()) >= 6:
+            return longest
+
+    return text
 
 
 # ---------------------------------------------------------------------------

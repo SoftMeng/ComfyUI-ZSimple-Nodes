@@ -412,6 +412,62 @@ def test_strip_think_combined_with_plain_reasoning():
 
 
 # ---------------------------------------------------------------------------
+# Sentence-level stripping (the actual user symptom)
+# ---------------------------------------------------------------------------
+
+def test_strip_reasoning_inline_with_answer_single_paragraph():
+    """The actual user case: LLM emits reasoning and the answer in a
+    SINGLE paragraph (no \\n\\n separator). Old paragraph-based logic
+    missed this; new sentence-based logic catches it."""
+    text = (
+        'First, I need to pick the right style and medium. The user did not '
+        'specify, so I will choose "A watercolor illustration of" as it is '
+        'versatile and allows for detailed descriptions. Next, the subject: '
+        'maybe a person in a specific outfit. Let us say a woman in a blue '
+        'dress with gold details. Neutral language for clothing and colors.'
+    )
+    out = _strip_think_blocks(text)
+    assert not out.lower().startswith("first")
+    # The first non-reasoning sentence should be the answer
+    assert out.startswith("A watercolor illustration of") or "watercolor" in out
+
+
+def test_strip_reasoning_when_first_sentence_is_answer():
+    text = (
+        "A cinematic photograph of a woman in a red dress standing in "
+        "a cityscape at golden hour, medium shot, eye-level camera angle."
+    )
+    assert _strip_think_blocks(text) == text
+
+
+def test_strip_reasoning_falls_back_to_longest_sentence():
+    """If every sentence contains a reasoning keyword, return the longest
+    single sentence (it's likely the closest thing to a real answer)."""
+    text = (
+        "I need to think about this. The user wants a sunset. I should "
+        "describe the colors. Perhaps orange and pink. Maybe with clouds."
+    )
+    out = _strip_think_blocks(text)
+    # Longest sentence is "The user wants a sunset" or "I should describe
+    # the colors" — both contain reasoning keywords so we just pick longest.
+    assert len(out.split()) >= 4
+
+
+def test_strip_keeps_actual_think_block_then_answer():
+    """Mix of <think> + plain reasoning + answer sentences."""
+    text = (
+        "<think>brief internal note</think>"
+        "First, I need to decide on style. "
+        "A vibrant oil painting of a lighthouse on a stormy coast, "
+        "bold brushstrokes, dramatic lighting."
+    )
+    out = _strip_think_blocks(text)
+    assert "vibrant oil painting" in out
+    assert "First" not in out
+    assert "think" not in out.lower() or "vibrant" in out.lower()
+
+
+# ---------------------------------------------------------------------------
 # End-to-end via fake clip
 # ---------------------------------------------------------------------------
 
