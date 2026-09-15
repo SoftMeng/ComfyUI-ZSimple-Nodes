@@ -428,6 +428,40 @@ class PromptEnhancePlus(io.ComfyNode):
                 io.Int.Input("top_k", default=64, min=0, max=1000, step=1),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
+                io.Float.Input(
+                    "min_p",
+                    default=0.0,
+                    min=0.0,
+                    max=1.0,
+                    step=0.01,
+                    advanced=True,
+                    tooltip=(
+                        "min_p sampling — pass through to clip.generate. Default 0.0 "
+                        "disables; 0.05-0.1 recommended for slightly tighter sampling."
+                    ),
+                ),
+                io.Float.Input(
+                    "repetition_penalty",
+                    default=1.0,
+                    min=1.0,
+                    max=2.0,
+                    step=0.01,
+                    advanced=True,
+                    tooltip=(
+                        "Penalize tokens that already appeared. Values > 1.0 discourage "
+                        "repetition. Useful to fight the planning-loop pattern where "
+                        "4B models restate the same opening over and over."
+                    ),
+                ),
+                io.Float.Input(
+                    "presence_penalty",
+                    default=0.0,
+                    min=0.0,
+                    max=5.0,
+                    step=0.01,
+                    advanced=True,
+                    tooltip="Pass-through to clip.generate. See TextGenerate node.",
+                ),
                 io.Boolean.Input(
                     "thinking",
                     default=False,
@@ -464,6 +498,9 @@ class PromptEnhancePlus(io.ComfyNode):
         audio=None,
         custom_template="",
         thinking=False,
+        min_p=0.0,
+        repetition_penalty=1.0,
+        presence_penalty=0.0,
     ) -> io.NodeOutput:
         custom_template = (custom_template or "").strip()
 
@@ -511,7 +548,10 @@ class PromptEnhancePlus(io.ComfyNode):
             temperature=temperature,
             top_k=top_k,
             top_p=top_p,
+            min_p=min_p,
+            repetition_penalty=repetition_penalty,
             seed=seed,
+            presence_penalty=presence_penalty,
         )
 
         generated_text = clip.decode(generated_ids)
