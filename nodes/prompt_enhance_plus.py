@@ -47,73 +47,57 @@ CRITICAL: Your response IS the prompt paragraph. Start the first word with the v
 # H3 — sourced from MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt.
 # Three core fields: integrated_multimodal_description, overall_soundscape,
 # non_diegetic_music. Shot-based timeline. Time anchors like "0.00 seconds".
-_H3_T2V_SYSTEM_PROMPT = """You write H3 video prompts. Output EXACTLY these three labelled fields, no other text:
+_H3_T2V_SYSTEM_PROMPT = """You write H3 video prompts. Output three labelled fields in this exact order:
 
-integrated_multimodal_description: [Shot 1] ... describe visuals, action, camera, dialogue chronologically
-overall_soundscape: ... ambient + physical sounds
-non_diegetic_music: ... background music
-
-Example:
-User: a runner at sunset
-Output:
-integrated_multimodal_description: [Shot 1] Cinematic wide shot, static camera at low angle. A lean male runner in his late twenties, faded blue tank top, pounds along a dusty trail as the setting sun paints the sky in deep orange and violet, sweat glistening on his shoulders, his breath forming small white clouds, his arms pumping in a steady rhythm. [Shot 2] At 00:03.000, the camera cuts to a close-up of his face. His jaw clenches, eyes narrow, the orange light catches the sweat on his brow as he exhales hard and shakes his head with a quiet, exhausted smile.
-overall_soundscape: Steady rhythmic footfalls on packed dirt, the crunch of gravel, his labored breathing, the distant chirp of crickets, and a faint far-off car engine.
-non_diegetic_music: Slow, melancholic acoustic guitar arpeggios fade in beneath the second shot and swell gently through the end.
-
-CRITICAL: The first line of your response must be "integrated_multimodal_description:". Output ONLY the three fields. No "First, I need to", no preamble.
-"""
-
-_H3_I2V_SYSTEM_PROMPT = """You write H3 image-to-video prompts. Output EXACTLY this alignment line followed by the three labelled fields, no other text:
-
-For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
-
-integrated_multimodal_description: ... anchored to the first frame, then action develops forward
+integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed)
 overall_soundscape: ...
 non_diegetic_music: ...
 
-Example:
-User first frame + request: person at a doorway
-Output:
+Example input: a runner at sunset
+Example output:
+integrated_multimodal_description: [Shot 1] Cinematic wide shot, static camera at low angle. A lean male runner in his late twenties, faded blue tank top, pounds along a dusty trail as the setting sun paints the sky in deep orange and violet, sweat glistening on his shoulders, his breath forming small white clouds, his arms pumping in a steady rhythm. [Shot 2] At 00:03.000, the camera cuts to a close-up of his face. His jaw clenches, eyes narrow, the orange light catches the sweat on his brow as he exhales hard and shakes his head with a quiet, exhausted smile.
+overall_soundscape: Steady rhythmic footfalls on packed dirt, the crunch of gravel, his labored breathing, the distant chirp of crickets, and a faint far-off car engine.
+non_diegetic_music: Slow, melancholic acoustic guitar arpeggios fade in beneath the second shot and swell gently through the end.
+"""
+
+_H3_I2V_SYSTEM_PROMPT = """You write H3 image-to-video prompts. Output starts with this alignment line, then three labelled fields:
+
+For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+integrated_multimodal_description: ...
+overall_soundscape: ...
+non_diegetic_music: ...
+
+Example input first frame: a person at a doorway
+Example output:
 For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
 integrated_multimodal_description: [Shot 1] Cinematic medium shot, static camera, front-facing angle. A person in a long dark coat stands at the threshold of a weathered wooden doorway, warm light from inside spilling onto the worn floor tiles, capturing the exact framing of the reference frame. The door creaks open, the person takes one slow step inside, the hem of the coat brushes the doorframe, and a faint smile crosses their face as they lower their head slightly and pull the door shut behind them with a soft click. The interior light grows dimmer as the door seals.
 overall_soundscape: Wood creaking, the soft tap of leather on tile, fabric brushing wood, the muffled clink of the latch.
 non_diegetic_music: A single sustained piano note fading through the closing door.
-
-CRITICAL: The first line of your response must be "For the target video, at 0.00 seconds...". Output ONLY the alignment line and three fields. No "First, I need to", no preamble.
 """
 
-# Z-Image — natural language + style prefix.
-_ZIMAGE_T2I_SYSTEM_PROMPT = """You write Z-Image prompts. Output one paragraph that starts with a style phrase ("A cinematic photograph of...", "A 3D render of...", "A watercolor illustration of...", etc.) and describes the subject with concrete details (clothing, colors, lighting, framing).
+# Z-Image.
+_ZIMAGE_T2I_SYSTEM_PROMPT = """Write a Z-Image generation prompt for the user's request. Output one paragraph that starts with a style phrase ("A cinematic photograph of", "A 3D render of", "A watercolor illustration of", etc.) and describes the subject with concrete details (clothing, colors, materials, lighting, framing, composition).
 
-Example:
-User: a woman in a park
-Output: A cinematic photograph of a woman in her early thirties with shoulder-length dark hair, wearing a cream linen dress, standing in a sunlit park with autumn foliage, medium shot, shallow depth of field, warm golden hour lighting.
-
-CRITICAL: The first word of your response is the style phrase ("A...", "An..."). Output ONLY the paragraph. No "First, I need to", no preamble, no planning.
+Example input: a woman in a park
+Example output: A cinematic photograph of a woman in her early thirties with shoulder-length dark hair, wearing a cream linen dress, standing in a sunlit park with autumn foliage, medium shot, shallow depth of field, warm golden hour lighting.
 """
 
-# Krea-2 — direct reuse of the official expansion prompt from
-# krea-2/docs/expansion.txt.
-_KREA2_T2I_SYSTEM_PROMPT = """You are an expert prompt engineer. Given a user request, output one expanded image-generation prompt paragraph starting with a style phrase and describing the subject with concrete, observable details (clothing, colors, materials, lighting, composition).
+# Krea-2.
+_KREA2_T2I_SYSTEM_PROMPT = """Expand the user's request into one Krea-2 image-generation prompt paragraph. Start with a style phrase. Describe the subject with concrete, observable details (clothing, colors, materials, lighting, composition). Preserve every subject, action, color the user named. If they specified a medium ("photo of", "painting of", "3D render of"), honor it.
 
-Example:
-User: a woman in a park
-Output: A cinematic photograph of a woman in her early thirties with shoulder-length dark hair, wearing a cream linen dress, standing in a sunlit park with autumn foliage, medium shot, shallow depth of field, warm golden hour lighting.
-
-Rules: preserve every subject, action, color the user named. If they specified a medium ("photo of", "painting of"), honor it. If they asked for visible text, quote it. Output one cohesive paragraph.
-
-CRITICAL: The first word of your response is the style phrase. Output ONLY the paragraph. No preamble, no planning.
+Example input: a woman in a park
+Example output: A cinematic photograph of a woman in her early thirties with shoulder-length dark hair, wearing a cream linen dress, standing in a sunlit park with autumn foliage, medium shot, shallow depth of field, warm golden hour lighting.
 """
 
 # Krea-2 Edit.
-_KREA2_EDIT_SYSTEM_PROMPT = """You write Krea-2 Edit / Qwen-Edit instructions. The user provides a reference image and a short edit intent. Output one paragraph that (1) briefly grounds in the current image state (1 sentence: subject, setting, lighting, style) then (2) states the desired change as a concrete imperative ("change X to Y", "replace A with B", "remove C").
+_KREA2_EDIT_SYSTEM_PROMPT = """Write a Krea-2 Edit instruction for the user's request. The user provided a reference image and a short edit intent. Output one paragraph: (1) one grounding sentence describing the current image state (subject, setting, lighting, style), then (2) the desired change as a concrete imperative ("change X to Y", "replace A with B", "remove C").
 
-Example:
-User: remove the red scarf
-Output: The subject wears a red wool scarf around the neck against a soft gray background. Remove the red wool scarf from the subject's neck, leaving the collar of the white shirt visible.
-
-CRITICAL: The first sentence of your response is the grounding sentence. Output ONLY the edit paragraph. No preamble, no planning.
+Example input: remove the red scarf
+Example output: The subject wears a red wool scarf around the neck against a soft gray background. Remove the red wool scarf from the subject's neck, leaving the collar of the white shirt visible.
 """
+
+
 
 
 _BUILTIN_TEMPLATES: dict[tuple[str, str], str] = {
