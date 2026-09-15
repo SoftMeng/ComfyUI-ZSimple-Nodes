@@ -47,27 +47,51 @@ CRITICAL: Your response IS the prompt paragraph. Start the first word with the v
 # H3 — sourced from MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt.
 # Three core fields: integrated_multimodal_description, overall_soundscape,
 # non_diegetic_music. Shot-based timeline. Time anchors like "0.00 seconds".
-_H3_T2V_SYSTEM_PROMPT = """integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed)
-overall_soundscape: ambient and physical sounds
-non_diegetic_music: background music (or omit if none)"""
+_H3_T2V_SYSTEM_PROMPT = """You are an expert prompt engineer for the H3 video model. Given a brief user request describing a scene, expand it into a detailed H3 prompt with three labelled fields.
 
-_H3_I2V_SYSTEM_PROMPT = """For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+Output EXACTLY these three fields, in this order, no other text:
 
-integrated_multimodal_description: ... (anchored to the first frame, then action develops forward)
+integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed). State the visual style at the start of Shot 1. For every shot, weave in shot type, camera motion, and camera viewpoint in prose. Describe subjects, clothing, colors, actions. Quote dialogue if any.
+
+overall_soundscape: Summarize the ambient soundscape and physical action sounds (footsteps, fabric, contact, ambient). Be concrete.
+
+non_diegetic_music: Background music that characters cannot hear. State type, mood, tempo. Omit if none.
+"""
+
+_H3_I2V_SYSTEM_PROMPT = """You are an expert prompt engineer for the H3 video model. Given a first-frame reference image and a brief user request, expand it into a detailed H3 image-to-video prompt.
+
+Output EXACTLY this alignment line, then three labelled fields, no other text:
+
+For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+integrated_multimodal_description: ... (anchored to the first frame; then action develops forward)
+
 overall_soundscape: ...
-non_diegetic_music: ... (or omit if none)"""
 
-# Z-Image. Empty system prompt — the user's prompt is the only signal.
-# Previous attempts at task-describing system prompts caused small LLMs
-# to plan-then-write a preamble. With an empty system message, the LLM
-# behaves more like a continuation model and writes the prompt directly.
-_ZIMAGE_T2I_SYSTEM_PROMPT = """"""
+non_diegetic_music: ... (or omit if none)
+"""
+
+# Z-Image. Real task-describing system prompt. Previous "empty" attempt
+# was wrong — empty system message makes 4B LLMs treat the user prompt as
+# the start of free-form text to continue, not as a request to expand.
+_ZIMAGE_T2I_SYSTEM_PROMPT = """You are an expert prompt engineer for the Z-Image text-to-image model. Given a brief user request, expand it into a single detailed image prompt paragraph.
+
+Output format: one paragraph that starts with a style phrase ("A cinematic photograph of", "A 3D render of", "A watercolor illustration of", "An oil painting of", etc.) and describes the subject with concrete details — clothing, colors, materials, lighting, framing, composition. Use neutral, observable language. Avoid vague intensifiers (very, extremely, vibrant, stunning). If the user asks for visible text, quote the exact text inside quotation marks.
+
+Preserve every subject, action, color, and spatial relationship the user named. Do not invent new objects, characters, or props unless the user clearly implies them.
+"""
 
 # Krea-2.
-_KREA2_T2I_SYSTEM_PROMPT = """"""
+_KREA2_T2I_SYSTEM_PROMPT = """You are an expert prompt engineer for the Krea-2 text-to-image model. Given a brief user request, expand it into one detailed image-generation prompt paragraph.
+
+Start with a style phrase (e.g. "A cinematic photograph of", "A 3D render of", "A watercolor illustration of"). Describe the subject with concrete, observable details — clothing, colors, materials, lighting, composition. Preserve every subject, action, color the user named. If they specified a medium ("photo of", "painting of", "3D render of"), honor it.
+"""
 
 # Krea-2 Edit.
-_KREA2_EDIT_SYSTEM_PROMPT = """"""
+_KREA2_EDIT_SYSTEM_PROMPT = """You are an expert prompt engineer for the Krea-2 Edit / Qwen-Edit image-editing model family. The user provides a reference image and a short edit intent. Expand that intent into a precise editing instruction.
+
+Output one paragraph that (1) opens with a grounding sentence describing the current image state (subject, pose, setting, lighting, style), then (2) states the desired change as a concrete imperative ("change X to Y", "replace A with B", "remove C", "shift the lighting to D"). Use present-tense, observable language. Specify only the elements that change.
+"""
 
 
 

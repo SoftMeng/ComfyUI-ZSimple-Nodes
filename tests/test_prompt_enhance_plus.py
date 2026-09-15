@@ -170,26 +170,17 @@ def test_builtin_templates_cover_all_target_models():
 
 def test_each_template_is_non_empty():
     for (model, mode), tmpl in _BUILTIN_TEMPLATES.items():
-        # Templates may be empty (Z-Image, Krea-2, Krea-2 Edit use empty
-        # system prompts to force raw continuation mode for small LLMs).
-        # H3 keeps field name scaffolds because the model must emit those
-        # exact field names.
-        if model in ("Z-Image", "Krea-2", "Krea-2-Edit"):
-            assert tmpl == "", f"{model}/{mode} should be empty system prompt"
-        else:
-            assert isinstance(tmpl, str) and tmpl.strip(), f"empty template for {model}/{mode}"
+        # All templates are real system prompts that describe the task
+        # to the LLM. Empty system messages make 4B models treat the
+        # user prompt as the start of free-form continuation, not as
+        # a request to expand — so empty is the wrong default here.
+        assert isinstance(tmpl, str) and tmpl.strip(), f"empty template for {model}/{mode}"
 
 
 def test_each_template_length_in_safe_range():
     for (model, mode), tmpl in _BUILTIN_TEMPLATES.items():
         words = len(tmpl.split())
-        # Z-Image / Krea-2 / Krea-2 Edit are deliberately empty (0 words).
-        # H3 keeps field name scaffolds. LTX 2.5 keeps a one-sentence task
-        # description + one short example.
-        if model in ("Z-Image", "Krea-2", "Krea-2-Edit"):
-            assert words == 0, f"{model}/{mode} should have 0 words (empty system prompt)"
-        else:
-            assert words <= 800, f"{model}/{mode} template has {words} words; too long"
+        assert 20 <= words <= 800, f"{model}/{mode} template has {words} words; expected 20-800"
 
 
 # ---------------------------------------------------------------------------
