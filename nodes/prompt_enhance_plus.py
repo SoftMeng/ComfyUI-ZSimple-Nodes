@@ -40,18 +40,6 @@ def _load_builtin_templates() -> dict[tuple[str, str], str]:
         path = os.path.join(_TEMPLATE_DIR, f"{stem}.md")
         with open(path, "r", encoding="utf-8") as f:
             templates[key] = f.read().strip()
-    # Prefer the upstream ComfyUI constants for LTX 2.5 when running inside
-    # ComfyUI so upstream edits propagate; the .md files are the offline
-    # fallback (dev environments without ComfyUI installed).
-    try:
-        from comfy_extras.nodes_textgen import (
-            LTX24_T2V_SYSTEM_PROMPT,
-            LTX24_I2V_SYSTEM_PROMPT,
-        )
-        templates[("LTX2.5", "T2V")] = LTX24_T2V_SYSTEM_PROMPT
-        templates[("LTX2.5", "I2V")] = LTX24_I2V_SYSTEM_PROMPT
-    except ImportError:
-        pass
     return templates
 
 
