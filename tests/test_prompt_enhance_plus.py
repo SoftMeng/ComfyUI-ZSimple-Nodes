@@ -291,32 +291,44 @@ def test_format_chat_qwen_returns_bare_content_for_tokenizer_wrap():
     assert "user prompt" in out
 
 
-def test_format_chat_never_emits_image_placeholders():
-    """B方案：_format_chat 不再写任何 image 占位符。
-    vision token 由 clip.tokenize(image=image) 自己注入。
-    qwen: <|vision_start|><|image_pad|><|vision_end|>
-    gemma4: <start_of_image>
-    gemma3: <start_of_image>"""
-    for family in ("qwen", "gemma4", "gemma3"):
+def test_format_chat_qwen_and_gemma3_never_emit_image_placeholders():
+    """qwen 和 gemma3 分支不写 image 占位符——依赖 tokenize 自己注入。
+    gemma4 分支要写 <|image><|image|><image|>（见下一个测试）。"""
+    for family in ("qwen", "gemma3"):
         out = _format_chat("SYS", "u", "img", family)
         assert "<image>" not in out, f"{family} still emits <image>"
+        assert "<|image><|image|><image|>" not in out, f"{family} still emits gemma4 marker"
         assert "<image_soft_token>" not in out, f"{family} still emits <image_soft_token>"
-        assert "<|image|>" not in out, f"{family} still emits <|image|>"
 
 
-def test_format_chat_image_does_not_change_text():
-    """image 参数不应改变 _format_chat 输出文本（placeholders 一律移除）。"""
-    base_q = _format_chat("SYS", "u", None, "qwen")
-    with_img = _format_chat("SYS", "u", "img", "qwen")
-    assert base_q == with_img
+def test_format_chat_gemma4_emits_image_placeholder_when_image_present():
+    """gemma4 + image 必须在 user turn 前加 <|image><|image|><image|>。
+    这是 TextGenerateLTX2Prompt 上游节点的标准模式（nodes_textgen.py:242）。"""
+    with_img = _format_chat("SYS", "u", "img", "gemma4")
+    assert "<|image><|image|><image|>" in with_img
 
-    base_g3 = _format_chat("SYS", "u", None, "gemma3")
-    with_img_g3 = _format_chat("SYS", "u", "img", "gemma3")
-    assert base_g3 == with_img_g3
 
+def test_format_chat_gemma4_no_image_placeholder_when_no_image():
+    """gemma4 + 无 image：不应有 image 占位符。"""
+    no_img = _format_chat("SYS", "u", None, "gemma4")
+    assert "<|image><|image|><image|>" not in no_img
+
+
+def test_format_chat_image_does_not_change_text_for_qwen_and_gemma3():
+    """qwen / gemma3：image 参数不应改变 _format_chat 输出文本（占位符全由 tokenize 注入）。"""
+    for family in ("qwen", "gemma3"):
+        base = _format_chat("SYS", "u", None, family)
+        with_img = _format_chat("SYS", "u", "img", family)
+        assert base == with_img, f"{family} changed text based on image"
+
+
+def test_format_chat_image_changes_gemma4_text():
+    """gemma4：image 应在 user turn 前注入 <|image><|image|><image|>。"""
     base_g4 = _format_chat("SYS", "u", None, "gemma4")
     with_img_g4 = _format_chat("SYS", "u", "img", "gemma4")
-    assert base_g4 == with_img_g4
+    assert base_g4 != with_img_g4
+    assert "<|image><|image|><image|>" in with_img_g4
+    assert "<|image><|image|><image|>" not in base_g4
 
 
 def test_execute_still_passes_image_kwarg_to_tokenize():
@@ -715,6 +727,65 @@ def test_no_template_raises_clear_error():
         assert "custom_template" in msg
     else:
         raise AssertionError("expected ValueError but execute returned without raising")
+
+
+class _ZImageTEModelStub(_FakeCLIP):
+    """Dynamic factory output: comfy/text_encoders/z_image.py:te() returns a
+    ZImageTEModel_(device=..., dtype=..., model_options=...) class whose real
+    __name__ is the factory output name. Mimic that here so the raise fires."""
+
+
+# Force the stub's __name__ to match the real ZImageTEModel_ class name.
+_ZImageTEModelStub.__name__ = "ZImageTEModel_"
+_ZImageTEModelStub.__qualname__ = "ZImageTEModel_"
+
+
+def test_execute_raises_for_text_only_clip_with_image():
+    """qwen3_4b (Z-Image TE / Lumina2) is a text-only LLM. Passing image=
+    to clip.tokenize is silently dropped — the LLM never sees the picture.
+    Surface this as a clear ValueError instead of letting the user think
+    image-conditioned expansion is working."""
+    clip = _ZImageTEModelStub(name="qwen_3_4b.safetensors", response="ok")
+    try:
+        PromptEnhancePlus.execute(
+            clip,
+            prompt="a cat",
+            target_model="Z-Image",
+            mode="T2I",
+            max_length=64,
+            temperature=0.7,
+            top_k=64,
+            top_p=0.95,
+            seed=0,
+            image="img-tensor",
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        assert "text-only" in msg.lower()
+        assert "Qwen2.5-VL" in msg or "vision-language" in msg.lower()
+        # And must name the actual CLIP class so the user can identify it
+        assert "ZImageTEModel_" in msg
+    else:
+        raise AssertionError("expected ValueError but execute returned without raising")
+
+
+def test_execute_text_only_clip_no_image_is_fine():
+    """Same ZImageTEModel_ stub, but image=None → no raise. The text-only
+    encoder is the expected choice for text-only prompt expansion; we only
+    complain when the user wired an image that cannot reach the LLM."""
+    clip = _ZImageTEModelStub(name="qwen_3_4b.safetensors", response="ok")
+    out = PromptEnhancePlus.execute(
+        clip,
+        prompt="a cat",
+        target_model="Z-Image",
+        mode="T2I",
+        max_length=64,
+        temperature=0.7,
+        top_k=64,
+        top_p=0.95,
+        seed=0,
+    )
+    assert out is not None
 
 
 if __name__ == "__main__":
