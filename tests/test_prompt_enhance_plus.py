@@ -298,24 +298,20 @@ def test_format_chat_no_image_token_when_no_image():
 # Thinking-mode control (ComfyUI TextGenerate compatibility)
 # ---------------------------------------------------------------------------
 
-def test_format_chat_qwen_thinking_false_primes_empty_think():
-    """qwen template with thinking=False appends <think>\\n</think>\\n after assistant turn.
-
-    Mirrors qwen35.py:768 behavior in ComfyUI's tokenizer."""
+def test_format_chat_qwen_no_think_prime():
+    """Qwen2.5 / Qwen3 4B do not support <think> tokens; the prime is
+    useless and gemma4.py:1562 explicitly warns that small models
+    treat it as an inline-reasoning cue. We do NOT prime. The chat
+    template itself is the "you may speak now" signal."""
     out = _format_chat("SYS", "u", None, "qwen", thinking=False)
-    assert out.endswith("<think>\n</think>\n")
-    assert "<|im_start|>assistant\n<think>\n</think>\n" in out
-
-
-def test_format_chat_qwen_thinking_true_omits_prime():
-    out = _format_chat("SYS", "u", None, "qwen", thinking=True)
+    assert not out.endswith("<think>\n</think>\n")
     assert out.endswith("<|im_start|>assistant\n")
-    assert "<think>" not in out
 
 
-def test_format_chat_gemma4_thinking_false_primes_empty_think():
+def test_format_chat_gemma4_no_think_prime():
     out = _format_chat("SYS", "u", None, "gemma4", thinking=False)
-    assert out.endswith("<think>\n</think>\n")
+    assert not out.endswith("<think>\n</think>\n")
+    assert out.endswith("<|turn>model\n")
 
 
 def test_format_chat_gemma3_thinking_false_does_not_prime():

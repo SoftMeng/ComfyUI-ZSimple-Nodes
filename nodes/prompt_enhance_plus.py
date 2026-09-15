@@ -185,37 +185,46 @@ def _format_chat(
     audio=None,
     thinking=False,
 ) -> str:
-    """Wrap system + user text in the chat template expected by the LLM family.
+    """Format the system + user text for the local LLM.
 
-    `thinking=False` mirrors ComfyUI's tokenizer behavior: for Qwen and Gemma4
-    we prime an empty <think>...</think> block so the model starts writing the
-    final answer immediately. Gemma3 (E2B/E4B) is deliberately NOT primed —
-    qwen35.py:768 and gemma4.py:1562 both note that small models interpret an
-    empty think block as an inline-reasoning cue and keep thinking despite it.
+    IMPORTANT on thinking mode:
+
+    Qwen3 / Gemma4 12B+ support a <think>...</think> block natively;
+    the qwen35.py:768 and gemma4.py:1562 tokenizers can prime an
+    empty closed block to nudge those models to write the final
+    answer immediately.
+
+    Qwen2.5 4B and Gemma 3 4B do NOT support thinking mode — the
+    <think> tokens are out-of-distribution for them. The prime
+    does nothing for these base models. Worse, gemma4.py:1562
+    explicitly warns that small models interpret an empty think
+    block as an inline-reasoning cue.
+
+    So this function does NOT prime any empty think block. The
+    chat template alone (ending in <|im_start|>assistant\\n) is
+    the right "you may speak now" signal. The `thinking` parameter
+    is forwarded to clip.tokenize for tokenizers that do honor it
+    (Qwen3.5 / Gemma4 12B) but it has no effect here on the
+    formatted text.
     """
     has_image = image is not None
     if family == "gemma4":
         media = "<|image><|image|><image|>\n\n" if has_image else ""
-        out = (
+        return (
             f"<|turn>system\n{system}<turn|>\n"
             f"<|turn>user\n{media}{user_text}<turn|>\n"
             f"<|turn>model\n"
         )
-        if not thinking:
-            out += "<think>\n</think>\n"
-        return out
     if family == "qwen":
         media = ""
         if has_image:
             media = "<|vision_start|><|image_pad|><|vision_end|>\n"
-        out = (
+        return (
             f"<|im_start|>system\n{system}<|im_end|>\n"
             f"<|im_start|>user\n{media}{user_text}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
-        if not thinking:
-            out += "<think>\n</think>\n"
-        return out
+    # Default to gemma3 format (also used for unknown tokenizers).
     media = "\n<image_soft_token>\n" if has_image else ""
     return (
         f"<start_of_turn>system\n{system}<end_of_turn>\n"
@@ -423,13 +432,13 @@ class PromptEnhancePlus(io.ComfyNode):
                     "thinking",
                     default=False,
                     tooltip=(
-                        "Disable (default) to force a non-thinking final answer. "
-                        "Mirrors ComfyUI's TextGenerate `thinking=False`: for Qwen and "
-                        "Gemma4 the chat template primes an empty <think> block so the "
-                        "model starts writing the final answer immediately. Gemma3 "
-                        "(E2B/E4B) is intentionally NOT primed — small models interpret "
-                        "an empty think block as an inline-reasoning cue. Enable only "
-                        "for models that support explicit thinking mode (Qwen3, Gemma4 12B/31B)."
+                        "For Qwen3.5 / Gemma4 12B+ that support thinking mode, "
+                        "passes thinking=thinking to clip.tokenize. Has no effect on "
+                        "Qwen2.5 / Gemma 3 4B base models (they have no thinking "
+                        "mode and cannot be silenced via this flag). Leave False for "
+                        "clean outputs; set True only if you want the model to use "
+                        "its native reasoning mode (then enable thinking_mode on the "
+                        "model loader and pick a thinking-capable checkpoint)."
                     ),
                 ),
             ],
