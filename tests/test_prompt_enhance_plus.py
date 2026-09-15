@@ -363,9 +363,11 @@ def test_strip_think_block_basic():
     assert _strip_think_blocks(text) == "actual answer"
 
 
-def test_strip_think_block_unclosed():
-    text = "<think>reasoning never ends\nactual answer here"
-    assert "actual answer here" in _strip_think_blocks(text)
+def test_strip_think_block_unclosed_deletes_everything():
+    """An unclosed <think> means max_length truncated the model mid-reasoning.
+    Everything after it is think content — no answer exists yet. Delete all."""
+    text = "<think>reasoning never ends\nmore reasoning lines\nstill thinking"
+    assert _strip_think_blocks(text) == ""
 
 
 def test_strip_think_block_no_block():

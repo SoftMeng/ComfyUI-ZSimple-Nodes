@@ -295,8 +295,10 @@ def _strip_think_blocks(text: str) -> str:
             break
         text = text[: m.start()] + text[m.end():]
 
-    # 2) unclosed thinking tag (truncate to end of current line)
-    text = re.sub(r"<think>[^\n]*", "", text)
+    # 2) unclosed thinking tag: an unclosed <think> means the output was
+    # truncated mid-reasoning — everything after it is think content with
+    # no answer yet. Delete to end of string (not just end of line).
+    text = re.sub(r"<think>.*\Z", "", text, flags=re.DOTALL)
 
     text = text.strip()
     if not text:
@@ -379,7 +381,19 @@ class PromptEnhancePlus(io.ComfyNode):
                     default="",
                     tooltip="Override the built-in system prompt with your own. Leave empty to use the built-in template.",
                 ),
-                io.Int.Input("max_length", default=512, min=64, max=32768, step=32),
+                io.Int.Input(
+                    "max_length",
+                    default=1024,
+                    min=64,
+                    max=32768,
+                    step=32,
+                    tooltip=(
+                        "Qwen3-thinking models spend the first few hundred tokens "
+                        "inside <think>...</think> before writing the answer. 1024 gives "
+                        "the model room to finish thinking AND write the final prompt; "
+                        "the think block is stripped from the output."
+                    ),
+                ),
                 io.Float.Input("temperature", default=0.7, min=0.01, max=2.0, step=0.01),
                 io.Int.Input("top_k", default=64, min=0, max=1000, step=1),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
