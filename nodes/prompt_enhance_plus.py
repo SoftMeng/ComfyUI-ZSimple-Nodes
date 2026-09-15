@@ -64,6 +64,8 @@ For every shot, weave these elements in natural prose (never as tags):
 overall_soundscape: Summarize the ambient sound, physical action sounds (footsteps, fabric rustle, object contact), and non-verbal human sounds across the entire video. Be concrete ("soft footsteps on tile"), not vague ("ambient sound").
 
 non_diegetic_music: Background music that characters cannot hear and only the audience hears. Specify type, mood, tempo, and any volume changes. Omit if no music is implied.
+
+OUTPUT RULE: Respond with ONLY the three labelled fields, no preamble, no explanation, no thinking out loud. The very first line of your response must be "integrated_multimodal_description:".
 """
 
 _H3_I2V_SYSTEM_PROMPT = """You are an expert prompt engineer for the MiniMax H3 video model. The user has supplied a first-frame reference image plus a brief request. Expand it into a complete H3 image-to-video prompt.
@@ -77,6 +79,8 @@ integrated_multimodal_description: Begin from the first-frame state — describe
 overall_soundscape: Ambient and physical action sounds for the whole clip.
 
 non_diegetic_music: Background music if any. Omit if none.
+
+OUTPUT RULE: Respond with ONLY the alignment line and the three labelled fields, no preamble, no explanation, no thinking out loud. The very first line of your response must be "For the target video, at 0.00 seconds...".
 """
 
 # Z-Image. Real task-describing system prompt with concrete rules
@@ -96,6 +100,8 @@ Expand the user's request into a single cohesive paragraph. Apply these rules:
 8. **Respect the human form.** Treat depictions of people with dignity. Assume clothing covers intimate anatomy.
 9. **Use present-tense verbs** for any implied action or frozen moment.
 10. **One paragraph, no bullets, no JSON, no markdown.**
+
+OUTPUT RULE: Respond with ONLY the expanded prompt paragraph. No preamble, no explanation, no thinking out loud, no "Here is the prompt:", no quotes around the output. The very first character of your response must be the first character of the prompt.
 """
 
 # Krea-2. Direct reuse of the official expansion prompt from
@@ -115,6 +121,8 @@ Follow these rules strictly:
 7. **Respect Existing Detail:** If the user's prompt is already detailed, lightly polish and finalize rather than heavily expanding — preserve their phrasing and direction.
 8. **Respect the Human Form:** Treat depictions of people with dignity. Assume clothing covers genitals and intimate anatomy.
 9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. "photo of", "photograph of", "illustration of", "painting of", "sketch of", "3D render of"), honor it. Do not pivot to a different medium to avoid difficulty — match the user's stated intent.
+
+OUTPUT RULE: Respond with ONLY the expanded prompt paragraph. No preamble, no explanation, no thinking out loud, no "Here is the prompt:", no quotes around the output. The very first character of your response must be the first character of the prompt.
 """
 
 # Krea-2 Edit. Adapt the Krea-2 style to image-editing semantics.
@@ -131,6 +139,8 @@ Output one cohesive paragraph that:
 7. Preserves everything else the user did not ask to change.
 
 Format: one cohesive paragraph starting with the grounding sentence, followed by the editing instruction.
+
+OUTPUT RULE: Respond with ONLY the editing instruction paragraph. No preamble, no explanation, no thinking out loud, no "Here is the edit:", no quotes around the output. The very first character of your response must be the first character of the editing instruction.
 """
 
 
