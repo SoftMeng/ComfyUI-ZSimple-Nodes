@@ -121,12 +121,15 @@ def _format_chat(
             f"<|turn>model\n"
         )
     if family == "qwen":
-        # Bare content: qwen35.py will wrap with llama_template and
-        # append the thinking prime. The image placeholder is inserted
-        # by the tokenizer when image kwarg is set.
+        # /no_think is a training-time soft switch built into Qwen3-series
+        # models: the model learned to skip its reasoning phase when it sees
+        # this token at the start of the user turn. It works independently
+        # of the chat-template prime the tokenizer injects (qwen3vl.py:181),
+        # so we stack both when thinking=False.
+        prefix = "" if thinking else "/no_think "
         if image is not None:
-            return f"{system}\n\n<image>{user_text}"
-        return f"{system}\n\n{user_text}"
+            return f"{system}\n\n<image>{prefix}{user_text}"
+        return f"{system}\n\n{prefix}{user_text}"
     # Default to gemma3 format.
     media = "\n<image_soft_token>\n" if has_image else ""
     return (

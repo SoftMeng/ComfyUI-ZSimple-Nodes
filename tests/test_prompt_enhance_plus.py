@@ -322,6 +322,39 @@ def test_format_chat_gemma4_does_not_pre_mark_think_block():
     assert out.endswith("<|turn>model\n")
 
 
+# ---------------------------------------------------------------------------
+# /no_think training-time soft switch (Qwen3-series models)
+# ---------------------------------------------------------------------------
+
+def test_format_chat_qwen_no_think_prefix_when_thinking_false():
+    """/no_think is a Qwen3 training-time instruction — model skips its
+    reasoning phase when it sees this at the start of the user turn.
+    Injected only for qwen family, only when thinking=False."""
+    out = _format_chat("SYS", "user prompt", None, "qwen", thinking=False)
+    assert "/no_think" in out
+    assert "user prompt" in out
+
+
+def test_format_chat_qwen_no_think_prefix_absent_when_thinking_true():
+    out = _format_chat("SYS", "user prompt", None, "qwen", thinking=True)
+    assert "/no_think" not in out
+    assert "user prompt" in out
+
+
+def test_format_chat_qwen_no_think_prefix_with_image():
+    out = _format_chat("SYS", "u", "img", "qwen", thinking=False)
+    assert "/no_think" in out
+    assert "<image>" in out
+
+
+def test_format_chat_gemma3_untouched_by_no_think():
+    """/no_think is Qwen-specific; gemma families never see it."""
+    out = _format_chat("SYS", "u", None, "gemma3", thinking=False)
+    assert "/no_think" not in out
+    out4 = _format_chat("SYS", "u", None, "gemma4", thinking=False)
+    assert "/no_think" not in out4
+
+
 def test_format_chat_gemma3_thinking_false_does_not_prime():
     """Gemma3 (E2B/E4B) MUST NOT be primed with an empty think block —
     gemma4.py:1562 explicitly warns that small models interpret an empty
