@@ -278,39 +278,47 @@ def test_format_chat_gemma4_uses_pipe_turn_markers():
     assert "<|turn>model" in out
 
 
-def test_format_chat_qwen_uses_im_start():
+def test_format_chat_qwen_returns_bare_content_for_tokenizer_wrap():
+    """Qwen path returns BARE content (no <|im_start|>) so the
+    qwen35.py tokenizer applies its own llama_template and triggers
+    the thinking prime at qwen35.py:763."""
     out = _format_chat("SYS", "user prompt", None, "qwen")
-    assert "<|im_start|>system" in out
-    assert "<|im_start|>assistant" in out
+    assert not out.startswith("<|im_start|>")
+    assert "SYS" in out
+    assert "user prompt" in out
 
 
-def test_format_chat_image_token_inserted():
+def test_format_chat_image_marker_inserted():
     out = _format_chat("SYS", "u", "img", "qwen")
-    assert "<|vision_start|>" in out
+    # qwen35.py consumes the <image> placeholder; the tokenizer-side
+    # vision tags (<|vision_start|>) are added by llama_template_images
+    # inside the tokenizer, not in our formatted text.
+    assert "<image>" in out
 
 
-def test_format_chat_no_image_token_when_no_image():
+def test_format_chat_no_image_marker_when_no_image():
     out = _format_chat("SYS", "u", None, "qwen")
-    assert "<|vision_start|>" not in out
+    assert "<image>" not in out
 
 
 # ---------------------------------------------------------------------------
-# Thinking-mode control (ComfyUI TextGenerate compatibility)
+# Thinking-mode control: prime is now applied by the tokenizer
+# (qwen35.py:763) for qwen, gemma4.py:1538 for gemma4, not by us.
 # ---------------------------------------------------------------------------
 
-def test_format_chat_qwen_no_think_prime():
-    """Qwen2.5 / Qwen3 4B do not support <think> tokens; the prime is
-    useless and gemma4.py:1562 explicitly warns that small models
-    treat it as an inline-reasoning cue. We do NOT prime. The chat
-    template itself is the "you may speak now" signal."""
+def test_format_chat_qwen_does_not_pre_mark_think_block():
+    """qwen35.py will append the empty think block at tokenize time
+    when thinking=False AND skip_template=False. Our _format_chat
+    must NOT pre-emit a think block itself (otherwise the model
+    would see a duplicated <think>\\n</think>\\n)."""
     out = _format_chat("SYS", "u", None, "qwen", thinking=False)
-    assert not out.endswith("<think>\n</think>\n")
-    assert out.endswith("<|im_start|>assistant\n")
+    assert "<think>" not in out
+    assert "<|im_start|>" not in out  # tokenizer will add the markers
 
 
-def test_format_chat_gemma4_no_think_prime():
+def test_format_chat_gemma4_does_not_pre_mark_think_block():
     out = _format_chat("SYS", "u", None, "gemma4", thinking=False)
-    assert not out.endswith("<think>\n</think>\n")
+    assert "<think>" not in out
     assert out.endswith("<|turn>model\n")
 
 

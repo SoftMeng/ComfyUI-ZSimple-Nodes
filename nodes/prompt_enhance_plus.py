@@ -187,25 +187,26 @@ def _format_chat(
 ) -> str:
     """Format the system + user text for the local LLM.
 
-    IMPORTANT on thinking mode:
+    IMPORTANT on thinking mode (Qwen 3.5 / Gemma 4 path):
 
-    Qwen3 / Gemma4 12B+ support a <think>...</think> block natively;
-    the qwen35.py:768 and gemma4.py:1562 tokenizers can prime an
-    empty closed block to nudge those models to write the final
-    answer immediately.
+    qwen35.py:744 detects "text starts with <|im_start|>" and skips the
+    llama_template. If we hand the tokenizer a string that already
+    contains <|im_start|>, it takes our text as-is and the
+    thinking-mode prime at qwen35.py:763 (which adds an empty
+    <think>\\n</think>\\n to the chat template) is bypassed.
 
-    Qwen2.5 4B and Gemma 3 4B do NOT support thinking mode — the
-    <think> tokens are out-of-distribution for them. The prime
-    does nothing for these base models. Worse, gemma4.py:1562
-    explicitly warns that small models interpret an empty think
-    block as an inline-reasoning cue.
+    To make thinking=False actually work for Qwen 3.5, this function
+    returns the BARE content (system + user concatenated) without
+    any chat-template markers. The qwen35.py tokenizer will then
+    detect "no <|im_start|> prefix" → apply its own llama_template →
+    append the thinking prime when thinking=False.
 
-    So this function does NOT prime any empty think block. The
-    chat template alone (ending in <|im_start|>assistant\\n) is
-    the right "you may speak now" signal. The `thinking` parameter
-    is forwarded to clip.tokenize for tokenizers that do honor it
-    (Qwen3.5 / Gemma4 12B) but it has no effect here on the
-    formatted text.
+    For gemma4 (which has its own template at gemma4.py:1530), the
+    <|turn>...<|turn|> markers are required by the tokenizer, so we
+    keep emitting them.
+
+    For gemma3 / unknown (no native thinking mode), the existing
+    <start_of_turn>...<end_of_turn> format is harmless and we keep it.
     """
     has_image = image is not None
     if family == "gemma4":
@@ -216,15 +217,13 @@ def _format_chat(
             f"<|turn>model\n"
         )
     if family == "qwen":
-        media = ""
-        if has_image:
-            media = "<|vision_start|><|image_pad|><|vision_end|>\n"
-        return (
-            f"<|im_start|>system\n{system}<|im_end|>\n"
-            f"<|im_start|>user\n{media}{user_text}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-    # Default to gemma3 format (also used for unknown tokenizers).
+        # Bare content: qwen35.py will wrap with llama_template and
+        # append the thinking prime. The image placeholder is inserted
+        # by the tokenizer when image kwarg is set.
+        if image is not None:
+            return f"{system}\n\n<image>{user_text}"
+        return f"{system}\n\n{user_text}"
+    # Default to gemma3 format.
     media = "\n<image_soft_token>\n" if has_image else ""
     return (
         f"<start_of_turn>system\n{system}<end_of_turn>\n"
@@ -531,10 +530,18 @@ class PromptEnhancePlus(io.ComfyNode):
             video=video, audio=audio, thinking=thinking,
         )
 
+        # For qwen / gemma4 we use skip_template=False so the tokenizer
+        # applies its own chat template (which is what carries the
+        # thinking-mode prime at qwen35.py:763 / gemma4.py:1538). For
+        # gemma3 / unknown we hand the tokenizer a complete chat
+        # template string already, so skip_template=True is required to
+        # avoid double-wrapping.
+        use_skip_template = family not in ("qwen", "gemma4")
+
         tokens = clip.tokenize(
             formatted,
             image=image,
-            skip_template=True,
+            skip_template=use_skip_template,
             min_length=1,
             video=video,
             audio=audio,
