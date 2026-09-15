@@ -222,27 +222,47 @@ def _detect_tokenizer_family(clip) -> str:
     return "unknown"
 
 
-def _format_chat(system: str, user_text: str, image, family: str, *, video=None, audio=None) -> str:
-    """Wrap system + user text in the chat template expected by the LLM family."""
+def _format_chat(
+    system: str,
+    user_text: str,
+    image,
+    family: str,
+    *,
+    video=None,
+    audio=None,
+    thinking=False,
+) -> str:
+    """Wrap system + user text in the chat template expected by the LLM family.
+
+    `thinking=False` mirrors ComfyUI's tokenizer behavior: for Qwen and Gemma4
+    we prime an empty <think>...</think> block so the model starts writing the
+    final answer immediately. Gemma3 (E2B/E4B) is deliberately NOT primed —
+    qwen35.py:768 and gemma4.py:1562 both note that small models interpret an
+    empty think block as an inline-reasoning cue and keep thinking despite it.
+    """
     has_image = image is not None
     if family == "gemma4":
         media = "<|image><|image|><image|>\n\n" if has_image else ""
-        return (
+        out = (
             f"<|turn>system\n{system}<turn|>\n"
             f"<|turn>user\n{media}{user_text}<turn|>\n"
             f"<|turn>model\n"
         )
+        if not thinking:
+            out += "<think>\n</think>\n"
+        return out
     if family == "qwen":
-        # Qwen2/3 chat template — matches Comfyui-QwenEditUtils nodes.py:210-211.
         media = ""
         if has_image:
             media = "<|vision_start|><|image_pad|><|vision_end|>\n"
-        return (
+        out = (
             f"<|im_start|>system\n{system}<|im_end|>\n"
             f"<|im_start|>user\n{media}{user_text}<|im_end|>\n"
             f"<|im_start|>assistant\n"
         )
-    # Default to gemma3 — the most widely supported chat format.
+        if not thinking:
+            out += "<think>\n</think>\n"
+        return out
     media = "\n<image_soft_token>\n" if has_image else ""
     return (
         f"<start_of_turn>system\n{system}<end_of_turn>\n"
@@ -401,6 +421,19 @@ class PromptEnhancePlus(io.ComfyNode):
                 io.Int.Input("top_k", default=64, min=0, max=1000, step=1),
                 io.Float.Input("top_p", default=0.95, min=0.0, max=1.0, step=0.01),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff),
+                io.Boolean.Input(
+                    "thinking",
+                    default=False,
+                    tooltip=(
+                        "Disable (default) to force a non-thinking final answer. "
+                        "Mirrors ComfyUI's TextGenerate `thinking=False`: for Qwen and "
+                        "Gemma4 the chat template primes an empty <think> block so the "
+                        "model starts writing the final answer immediately. Gemma3 "
+                        "(E2B/E4B) is intentionally NOT primed — small models interpret "
+                        "an empty think block as an inline-reasoning cue. Enable only "
+                        "for models that support explicit thinking mode (Qwen3, Gemma4 12B/31B)."
+                    ),
+                ),
             ],
             outputs=[
                 io.String.Output(display_name="enhanced_prompt"),
@@ -423,6 +456,7 @@ class PromptEnhancePlus(io.ComfyNode):
         video=None,
         audio=None,
         custom_template="",
+        thinking=False,
     ) -> io.NodeOutput:
         custom_template = (custom_template or "").strip()
 
@@ -448,7 +482,10 @@ class PromptEnhancePlus(io.ComfyNode):
             )
             video = None
             audio = None
-        formatted = _format_chat(system_prompt, prompt, image, family, video=video, audio=audio)
+        formatted = _format_chat(
+            system_prompt, prompt, image, family,
+            video=video, audio=audio, thinking=thinking,
+        )
 
         tokens = clip.tokenize(
             formatted,
@@ -457,6 +494,7 @@ class PromptEnhancePlus(io.ComfyNode):
             min_length=1,
             video=video,
             audio=audio,
+            thinking=thinking,
         )
 
         generated_ids = clip.generate(

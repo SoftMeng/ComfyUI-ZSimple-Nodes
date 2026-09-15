@@ -291,6 +291,62 @@ def test_format_chat_no_image_token_when_no_image():
 
 
 # ---------------------------------------------------------------------------
+# Thinking-mode control (ComfyUI TextGenerate compatibility)
+# ---------------------------------------------------------------------------
+
+def test_format_chat_qwen_thinking_false_primes_empty_think():
+    """qwen template with thinking=False appends <think>\\n</think>\\n after assistant turn.
+
+    Mirrors qwen35.py:768 behavior in ComfyUI's tokenizer."""
+    out = _format_chat("SYS", "u", None, "qwen", thinking=False)
+    assert out.endswith("<think>\n</think>\n")
+    assert "<|im_start|>assistant\n<think>\n</think>\n" in out
+
+
+def test_format_chat_qwen_thinking_true_omits_prime():
+    out = _format_chat("SYS", "u", None, "qwen", thinking=True)
+    assert out.endswith("<|im_start|>assistant\n")
+    assert "<think>" not in out
+
+
+def test_format_chat_gemma4_thinking_false_primes_empty_think():
+    out = _format_chat("SYS", "u", None, "gemma4", thinking=False)
+    assert out.endswith("<think>\n</think>\n")
+
+
+def test_format_chat_gemma3_thinking_false_does_not_prime():
+    """Gemma3 (E2B/E4B) MUST NOT be primed with an empty think block —
+    gemma4.py:1562 explicitly warns that small models interpret an empty
+    think block as an inline-reasoning cue."""
+    out = _format_chat("SYS", "u", None, "gemma3", thinking=False)
+    assert "<think>" not in out
+    assert out.endswith("<start_of_turn>model\n")
+
+
+def test_execute_passes_thinking_kwarg_to_tokenize():
+    """Thinking flag must flow to clip.tokenize so the tokenizer sees it."""
+    clip = _FakeCLIP(name="qwen3-4b", response="final answer")
+    PromptEnhancePlus.execute(
+        clip,
+        prompt="test",
+        target_model="LTX2.5",
+        mode="T2V",
+        max_length=64,
+        temperature=0.7,
+        top_k=64,
+        top_p=0.95,
+        seed=0,
+        thinking=False,
+    )
+    assert clip.last_tokenize_kwargs.get("thinking") is False
+
+
+def test_node_schema_exposes_thinking_input():
+    schema = PromptEnhancePlus.define_schema()
+    assert any(i.name == "thinking" for i in schema.inputs)
+
+
+# ---------------------------------------------------------------------------
 # Think-block stripping
 # ---------------------------------------------------------------------------
 
