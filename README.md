@@ -703,6 +703,9 @@ model 字段填对应端点支持的模型名即可。
 | `image` / `video` / `audio` | 可选多模态参考；连接 image/video 自动切 I2V，Krea-2-Edit 必须连接图 |
 | `max_length` / `temperature` / `top_k` / `top_p` / `seed` | 标准 LLM 采样参数 |
 
+> [!TIP]
+> 内置 system prompt 以可编辑的 markdown 文件存放在 `model_system_prompt/` 文件夹下（如 `zimage_t2i.md`、`h3_t2v.md`），可直接修改文件内容自定义内置模板，无需改代码。
+
 <details>
 <summary>📋 完整参数与输出参考（点击展开）</summary>
 

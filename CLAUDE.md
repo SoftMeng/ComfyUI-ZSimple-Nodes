@@ -26,18 +26,25 @@ Full prohibitions → `../docs/constraint/prohibitions.md`.
 
 ```
 __init__.py                  # NODE_CLASS_MAPPINGS + NODE_DISPLAY_NAME_MAPPINGS
+model_system_prompt/         # PromptEnhancePlus built-in .md templates (editable)
+  ltx25_t2v.md / ltx25_i2v.md / h3_t2v.md / h3_i2v.md
+  zimage_t2i.md / krea2_t2i.md / krea2_edit_i2v.md
+system_prompt/               # ZSimpleAgent 节点的通用 markdown system prompts
 nodes/
-  __init__.py                # re-exports the 5 node classes
+  __init__.py                # re-exports the node classes
   _save_common.py            # shared helpers (counter scan, metadata)
+  _agent_common.py           # agent helpers (_scan_system_prompts / _resolve_system)
   random_number_plus.py      # RandomNumberPlus
   save_image_plus.py         # SaveImagePlus
   save_text_plus.py          # SaveTextPlus
   save_video_plus.py         # SaveVideoPlus
   zimage_turbo_progressive.py # ZImageTurboProgressive
   ltx_video_turbo_progressive.py # ZLTXVideoTurboProgressive
+  prompt_enhance_plus.py     # PromptEnhancePlus
 tests/
   test_zimage_turbo_progressive.py
   test_ltx_video_turbo_progressive.py
+  test_prompt_enhance_plus.py
 requirements.txt             # only pillow-jxl-plugin (commented)
 README.md                    # primary user-facing docs
 ```

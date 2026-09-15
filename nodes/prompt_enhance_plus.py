@@ -8,107 +8,54 @@ LLM (gemma3 / gemma4 / qwen), and returns the expanded prompt as a single
 STRING.
 """
 
+import os
 import re
 
 from comfy_api.latest import io
 
 
 # ---------------------------------------------------------------------------
-# Built-in system prompts (target model specific)
+# Built-in system prompts — stored as editable .md files
 # ---------------------------------------------------------------------------
 
-# LTX 2.5 prompts: prefer the upstream ComfyUI constant when available (so
-# upstream edits propagate), fall back to a local copy in dev environments
-# without ComfyUI installed.
-try:
-    from comfy_extras.nodes_textgen import (
-        LTX24_T2V_SYSTEM_PROMPT as _LTX25_T2V_SYSTEM_PROMPT,
-        LTX24_I2V_SYSTEM_PROMPT as _LTX25_I2V_SYSTEM_PROMPT,
-    )
-except ImportError:
-    _LTX25_T2V_SYSTEM_PROMPT = """You write LTX 2.5 video prompts. Output a single paragraph that starts immediately with the action or visual and weaves in shot type, camera motion, camera viewpoint, soundscape, and chronological flow in prose.
+_TEMPLATE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "model_system_prompt",
+)
 
-Example:
-User: a woman walks into a cafe
-Output: A cinematic medium shot frames a woman in her early thirties, cream linen blazer, shoulder-length dark hair, as she pushes through the brass-handled glass door of a corner cafe, captured from a front-facing angle as the camera slowly tracks her forward. The soft bell above the door chimes twice, footsteps cross worn wooden floorboards, the espresso machine hisses in the background as the warm amber light from the window catches her face, and she pauses, scans the room, smiles, and walks toward an empty table by the rain-streaked window while rain taps the glass.
-
-CRITICAL: Your response IS the prompt paragraph. Start the first word of your response with the visual/action. No "First, I need to", no "Let me think", no preamble. No planning. Output ONLY the paragraph above-style.
-"""
-
-    _LTX25_I2V_SYSTEM_PROMPT = """You write LTX 2.5 image-to-video prompts. The first frame is already given. Continue chronologically from that frame in one prose paragraph that weaves in shot type, camera motion, camera viewpoint, soundscape, and chronological flow.
-
-Example:
-User first frame + request: woman in a red coat at a bus stop
-Output: From the same front-facing medium shot, a woman in her mid-thirties with shoulder-length auburn hair, wearing a tailored red wool coat, stands under the weathered awning of a city bus stop as evening traffic streams past in soft bokeh behind her, captured from a static eye-level angle as the camera holds steady. The distant rumble of city buses, the click-clack of heels on wet pavement, and the hiss of a passing car wash over the muted sound of the rain as a yellow-orange bus rounds the corner and slows, its brakes hissing. She glances up, tucks a loose strand behind her ear, gathers her bag, and steps forward toward the opening doors as the bus driver waves her on and a soft chime sounds.
-
-CRITICAL: Your response IS the prompt paragraph. Start the first word with the visual/action continuing from the first frame. No "First, I need to", no "Let me think", no preamble. Output ONLY the paragraph above-style.
-"""
-
-# H3 — sourced from MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt.
-# Three core fields: integrated_multimodal_description, overall_soundscape,
-# non_diegetic_music. Shot-based timeline. Time anchors like "0.00 seconds".
-_H3_T2V_SYSTEM_PROMPT = """You are an expert prompt engineer for the MiniMax H3 video model. Given a brief user request describing a scene, expand it into a complete H3 prompt.
-
-Output EXACTLY these three labelled fields in this order, with no other text before or after:
-
-integrated_multimodal_description: [Shot 1] ... (continue with [Shot 2], [Shot 3] as needed when the scene has natural cuts).
-
-For every shot, weave these elements in natural prose (never as tags):
-- Shot type: extreme wide shot, wide shot, medium shot, medium close-up, close-up, or extreme close-up.
-- Camera motion: state explicitly (pan, tilt, dolly, track, push-in, pull-out, static, etc.). If none, write "the camera remains static".
-- Camera viewpoint: front-facing, back-facing, side view, over-the-shoulder, top-down, low-angle, or high-angle.
-- Visual style: cinematic, live-action, 2D-animated, 3D CG, claymation, watercolor, vintage film, etc.
-- Subjects, clothing, colors, props, spatial layout, actions, reactions.
-- Dialogue: quote exact words and identify speaker.
-
-overall_soundscape: Summarize the ambient sound, physical action sounds (footsteps, fabric rustle, object contact), and non-verbal human sounds across the entire video. Be concrete ("soft footsteps on tile"), not vague ("ambient sound").
-
-non_diegetic_music: Background music that characters cannot hear and only the audience hears. Specify type, mood, tempo, and any volume changes. Omit if no music is implied.
-"""
-
-_H3_I2V_SYSTEM_PROMPT = """You are an expert prompt engineer for the MiniMax H3 video model. The user has supplied a first-frame reference image plus a brief request. Expand it into a complete H3 image-to-video prompt.
-
-Output EXACTLY this alignment line, then three labelled fields, with no other text:
-
-For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
-
-integrated_multimodal_description: Begin from the first-frame state — describe the framing, subjects, clothing, colors, lighting exactly as shown in the reference. Then narrate how the user's requested action unfolds chronologically. For every shot, weave in shot type, camera motion, camera viewpoint, visual style, subjects, actions, and dialogue (if any) in natural prose.
-
-overall_soundscape: Ambient and physical action sounds for the whole clip.
-
-non_diegetic_music: Background music if any. Omit if none.
-"""
-
-# Z-Image. After 13 failed prompt-engineering attempts on a 4B base
-# model, the right move is to stop listing rules. Small models see
-# "1. ... 2. ... 3. ..." and start EXPLAINING each rule back instead
-# of writing a prompt. The system message below just sets the
-# role and the required output shape; the user's brief is the
-# only thing the model has to act on.
-_ZIMAGE_T2I_SYSTEM_PROMPT = """You write Z-Image prompts. Reply with one paragraph that starts with a style phrase such as "A cinematic photograph of" and continues with the subject, setting, lighting, and composition."""
-
-# Krea-2. Same minimal pattern as Z-Image; the Krea-2 official
-# expansion prompt is preserved as a custom_template default in
-# the README but the built-in default is the single-line minimal
-# version because small models restate numbered rules instead of
-# writing the prompt.
-_KREA2_T2I_SYSTEM_PROMPT = """You write Krea-2 prompts. Reply with one paragraph that starts with a style phrase such as "A cinematic photograph of" and continues with the subject, setting, lighting, and composition."""
-
-# Krea-2 Edit.
-_KREA2_EDIT_SYSTEM_PROMPT = """You write Krea-2 Edit / Qwen-Edit instructions. Reply with one paragraph that opens with a grounding sentence describing the current image state, then states the change as a concrete imperative such as "change X to Y" or "replace A with B"."""
-
-
-
-
-_BUILTIN_TEMPLATES: dict[tuple[str, str], str] = {
-    ("LTX2.5", "T2V"): _LTX25_T2V_SYSTEM_PROMPT,
-    ("LTX2.5", "I2V"): _LTX25_I2V_SYSTEM_PROMPT,
-    ("H3", "T2V"): _H3_T2V_SYSTEM_PROMPT,
-    ("H3", "I2V"): _H3_I2V_SYSTEM_PROMPT,
-    ("Z-Image", "T2I"): _ZIMAGE_T2I_SYSTEM_PROMPT,
-    ("Krea-2", "T2I"): _KREA2_T2I_SYSTEM_PROMPT,
-    ("Krea-2-Edit", "I2V"): _KREA2_EDIT_SYSTEM_PROMPT,
+_TEMPLATE_FILES = {
+    ("LTX2.5", "T2V"): "ltx25_t2v",
+    ("LTX2.5", "I2V"): "ltx25_i2v",
+    ("H3", "T2V"): "h3_t2v",
+    ("H3", "I2V"): "h3_i2v",
+    ("Z-Image", "T2I"): "zimage_t2i",
+    ("Krea-2", "T2I"): "krea2_t2i",
+    ("Krea-2-Edit", "I2V"): "krea2_edit_i2v",
 }
+
+
+def _load_builtin_templates() -> dict[tuple[str, str], str]:
+    templates = {}
+    for key, stem in _TEMPLATE_FILES.items():
+        path = os.path.join(_TEMPLATE_DIR, f"{stem}.md")
+        with open(path, "r", encoding="utf-8") as f:
+            templates[key] = f.read().strip()
+    # Prefer the upstream ComfyUI constants for LTX 2.5 when running inside
+    # ComfyUI so upstream edits propagate; the .md files are the offline
+    # fallback (dev environments without ComfyUI installed).
+    try:
+        from comfy_extras.nodes_textgen import (
+            LTX24_T2V_SYSTEM_PROMPT,
+            LTX24_I2V_SYSTEM_PROMPT,
+        )
+        templates[("LTX2.5", "T2V")] = LTX24_T2V_SYSTEM_PROMPT
+        templates[("LTX2.5", "I2V")] = LTX24_I2V_SYSTEM_PROMPT
+    except ImportError:
+        pass
+    return templates
+
+
+_BUILTIN_TEMPLATES: dict[tuple[str, str], str] = _load_builtin_templates()
 
 
 _TARGET_MODELS = list({k[0] for k in _BUILTIN_TEMPLATES})
