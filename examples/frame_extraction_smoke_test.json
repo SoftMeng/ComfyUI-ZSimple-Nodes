@@ -1,0 +1,328 @@
+{
+  "id": "frame-extraction-smoke-test-0001",
+  "revision": 0,
+  "last_node_id": 20,
+  "last_link_id": 19,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VHS_LoadVideo",
+      "pos": [30, 30],
+      "size": [320, 240],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [1]},
+        {"name": "frame_count", "type": "INT", "links": null},
+        {"name": "audio", "type": "AUDIO", "links": null}
+      ],
+      "properties": {"Node name for S&R": "VHS_LoadVideo"},
+      "widgets_values": [
+        "test.mp4",
+        "image",
+        24,
+        false,
+        24,
+        false,
+        false,
+        "<color:#8F8>video"
+      ]
+    },
+    {
+      "id": 2,
+      "type": "VAEEncoder",
+      "pos": [420, 30],
+      "size": [220, 80],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "pixels", "type": "IMAGE", "link": 1},
+        {"name": "vae", "type": "VAE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [3]}
+      ],
+      "properties": {"Node name for S&R": "VAEEncoder"},
+      "widgets_values": []
+    },
+    {
+      "id": 3,
+      "type": "VAELoader",
+      "pos": [30, 200],
+      "size": [320, 60],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "VAE", "type": "VAE", "links": [2]}
+      ],
+      "properties": {"Node name for S&R": "VAELoader"},
+      "widgets_values": ["ltx-2.5-vae.safetensors"]
+    },
+    {
+      "id": 4,
+      "type": "LatentCut",
+      "pos": [720, -120],
+      "size": [220, 120],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 3},
+        {"name": "dim", "type": "COMBO", "widget": {"name": "dim"}, "link": null},
+        {"name": "index", "type": "INT", "widget": {"name": "index"}, "link": null},
+        {"name": "amount", "type": "INT", "widget": {"name": "amount"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [4]}
+      ],
+      "properties": {"Node name for S&R": "LatentCut"},
+      "widgets_values": ["t", 0, 1]
+    },
+    {
+      "id": 5,
+      "type": "LatentCut",
+      "pos": [720, 40],
+      "size": [220, 120],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 3},
+        {"name": "dim", "type": "COMBO", "widget": {"name": "dim"}, "link": null},
+        {"name": "index", "type": "INT", "widget": {"name": "index"}, "link": null},
+        {"name": "amount", "type": "INT", "widget": {"name": "amount"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [5]}
+      ],
+      "properties": {"Node name for S&R": "LatentCut"},
+      "widgets_values": ["t", 24, 1]
+    },
+    {
+      "id": 6,
+      "type": "LatentCut",
+      "pos": [720, 200],
+      "size": [220, 120],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 3},
+        {"name": "dim", "type": "COMBO", "widget": {"name": "dim"}, "link": null},
+        {"name": "index", "type": "INT", "widget": {"name": "index"}, "link": null},
+        {"name": "amount", "type": "INT", "widget": {"name": "amount"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [6]}
+      ],
+      "properties": {"Node name for S&R": "LatentCut"},
+      "widgets_values": ["t", 48, 1]
+    },
+    {
+      "id": 7,
+      "type": "LatentCut",
+      "pos": [720, 360],
+      "size": [220, 120],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 3},
+        {"name": "dim", "type": "COMBO", "widget": {"name": "dim"}, "link": null},
+        {"name": "index", "type": "INT", "widget": {"name": "index"}, "link": null},
+        {"name": "amount", "type": "INT", "widget": {"name": "amount"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "LATENT", "type": "LATENT", "links": [7]}
+      ],
+      "properties": {"Node name for S&R": "LatentCut"},
+      "widgets_values": ["t", 72, 1]
+    },
+    {
+      "id": 8,
+      "type": "VAEDecode",
+      "pos": [1020, -120],
+      "size": [220, 80],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 4},
+        {"name": "vae", "type": "VAE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [8]}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 9,
+      "type": "VAEDecode",
+      "pos": [1020, 40],
+      "size": [220, 80],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 5},
+        {"name": "vae", "type": "VAE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [9]}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 10,
+      "type": "VAEDecode",
+      "pos": [1020, 200],
+      "size": [220, 80],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 6},
+        {"name": "vae", "type": "VAE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [10]}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "VAEDecode",
+      "pos": [1020, 360],
+      "size": [220, 80],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "samples", "type": "LATENT", "link": 7},
+        {"name": "vae", "type": "VAE", "link": 2}
+      ],
+      "outputs": [
+        {"name": "IMAGE", "type": "IMAGE", "links": [11]}
+      ],
+      "properties": {"Node name for S&R": "VAEDecode"},
+      "widgets_values": []
+    },
+    {
+      "id": 12,
+      "type": "SaveImage",
+      "pos": [1320, -120],
+      "size": [270, 80],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 8}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["frame_000"]
+    },
+    {
+      "id": 13,
+      "type": "SaveImage",
+      "pos": [1320, 40],
+      "size": [270, 80],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 9}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["frame_024"]
+    },
+    {
+      "id": 14,
+      "type": "SaveImage",
+      "pos": [1320, 200],
+      "size": [270, 80],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 10}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["frame_048"]
+    },
+    {
+      "id": 15,
+      "type": "SaveImage",
+      "pos": [1320, 360],
+      "size": [270, 80],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "images", "type": "IMAGE", "link": 11}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "SaveImage"},
+      "widgets_values": ["frame_072"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "IMAGE"],
+    [2, 3, 0, 2, 1, "VAE"],
+    [2, 3, 0, 8, 1, "VAE"],
+    [2, 3, 0, 9, 1, "VAE"],
+    [2, 3, 0, 10, 1, "VAE"],
+    [2, 3, 0, 11, 1, "VAE"],
+    [3, 2, 0, 4, 0, "LATENT"],
+    [3, 2, 0, 5, 0, "LATENT"],
+    [3, 2, 0, 6, 0, "LATENT"],
+    [3, 2, 0, 7, 0, "LATENT"],
+    [4, 4, 0, 8, 0, "LATENT"],
+    [5, 5, 0, 9, 0, "LATENT"],
+    [6, 6, 0, 10, 0, "LATENT"],
+    [7, 7, 0, 11, 0, "LATENT"],
+    [8, 8, 0, 12, 0, "IMAGE"],
+    [9, 9, 0, 13, 0, "IMAGE"],
+    [10, 10, 0, 14, 0, "IMAGE"],
+    [11, 11, 0, 15, 0, "IMAGE"]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "1 - Load Video + Encode",
+      "bounding": [0, 0, 700, 290],
+      "color": "#3f5159",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "2 - Frame Extraction (4 parallel LatentCut + VAEDecode)",
+      "bounding": [680, -180, 940, 700],
+      "color": "#8A8",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.8258,
+      "offset": [60, 130]
+    },
+    "frontendVersion": "1.51.9",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": false,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

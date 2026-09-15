@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-V3%20Schema-blue?style=for-the-badge)](https://github.com/comfyanonymous/ComfyUI)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-green?style=for-the-badge)](https://www.python.org/)
-[![Nodes](https://img.shields.io/badge/Nodes-7-orange?style=for-the-badge)](#-节点列表)
+[![Nodes](https://img.shields.io/badge/Nodes-8-orange?style=for-the-badge)](#-节点列表)
 [![PRs Welcome](https://img.shields.io/badge/PRs-Welcome-brightgreen?style=for-the-badge)](../../pulls)
 
 **为 ComfyUI 工作流添砖加瓦 · 单文件单节点 · 现代压缩与质量参数**
@@ -18,7 +18,7 @@
 
 ---
 
-## ✨ 八个节点，各自解决一个具体痛点
+## ✨ 九个节点，各自解决一个具体痛点
 
 | 节点 | 痛点 | 关键特性 |
 |---|---|---|
@@ -30,6 +30,7 @@
 | **ZLTXVideoTurboProgressive** | LTX2.5 多模态视频工作流需要 14+ LTXV 算子节点堆叠 | LTX2.5 视频两阶段渐进式采样（Stage1 低分辨率 + ×2 升频 + Stage2 高分辨率）；多模态文本/参考图/音频单节点配置 |
 | **ZSimpleAnthropicAgent** | 短 prompt 扩写 / 文案润色需要写规则、调 API | 通过本地 Anthropic 代理调用 Claude Messages API；system prompt 从 markdown 文件下拉选择；STRING → STRING；API 失败直接 raise |
 | **ZSimpleOpenAIAgent** | 短 prompt 需要调用 OpenAI 兼容 API（默认 Qwen）扩写 | 节点参数全自包含（model/api_key/base_url/temperature/max_tokens）；默认指向阿里云 DashScope Qwen；STRING → STRING；空 api_key 或 API 失败直接 raise |
+| **PromptEnhancePlus** | 短 prompt 喂给 LTX/H3/Z-Image/Krea-2 经常效果差，需要按目标模型训练 caption 风格扩写 | 内置 5 个目标模型 system prompt（LTX2.5/H3/Z-Image/Krea-2/Krea-2-Edit），自动适配 Gemma 3/4 + Qwen chat 模板，支持 image/video/audio 多模态输入，支持外接自定义模板覆盖内置 |
 
 > [!NOTE]
 > 本项目处于活跃迭代阶段，节点按需添加。如果你有特定工作流痛点想要解决，欢迎提 Issue。
@@ -681,6 +682,86 @@ model 字段填对应端点支持的模型名即可。
 #### 搜索别名
 
 `anthropic` / `claude` / `llm` / `prompt enhancer` / `prompt expander`
+
+</details>
+
+---
+
+### ✨ PromptEnhancePlus（菜单：`ZSimple-Nodes/text`）
+
+用本地轻量 LLM（Gemma 3/4、Qwen 3.5 等）把短 prompt 扩写成目标模型的训练 caption 风格。内置 5 个目标模型的 system prompt，可外接自定义模板覆盖，支持 image / video / audio 多模态输入。
+
+**典型用法**：短句"A cat walks" → 自动扩写成 LTX 2.5 训练风格的完整描述（含镜头、声音、动作时序），直接喂给 `LTXAddVideoICLoRAGuide` 或 `KSampler` 出片。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `target_model` | 目标模型（LTX2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit）—— 决定走哪套内置 system prompt |
+| `mode` | `auto` = 按 image/video/audio 是否连接自动选 T2V/T2I/I2V；或强制指定 |
+| `custom_template` | 非空时优先于内置模板；用户粘贴自己的 system prompt |
+| `image` / `video` / `audio` | 可选多模态参考；连接 image/video 自动切 I2V，Krea-2-Edit 必须连接图 |
+| `max_length` / `temperature` / `top_k` / `top_p` / `seed` | 标准 LLM 采样参数 |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `clip` | CLIP | — | 本地 LLM（通过 ComfyUI `LoadCLIP` 加载 Gemma / Qwen 等） |
+| `prompt` | STRING | `""` | 用户短 prompt（multiline + dynamic_prompts） |
+| `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` |
+| `mode` | COMBO | `auto` | `auto` / `T2V` / `T2I` / `I2V` |
+| `image` | IMAGE | opt | 首帧参考（I2V 模式自动启用） |
+| `video` | IMAGE | opt | 视频帧序列（24 FPS，1 FPS 内部采样） |
+| `audio` | AUDIO | opt | 音频上下文（仅 qwen 支持） |
+| `custom_template` | STRING | `""` | 外接 system prompt，覆盖内置 |
+| `max_length` | INT | 512 | LLM 最大输出 token |
+| `temperature` | FLOAT | 0.7 | 采样温度 |
+| `top_k` | INT | 64 | top-k 采样 |
+| `top_p` | FLOAT | 0.95 | nucleus 采样 |
+| `seed` | INT | 0 | 随机种子 |
+
+#### 输出
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `enhanced_prompt` | STRING | 扩写后的 prompt，已剥离 `<think>` 推理块；空输出回退到原始 prompt |
+
+#### Chat 模板自动适配
+
+节点根据 `clip.tokenizer.clip_name` 自动选择 chat 模板：
+
+| 加载的 LLM | chat 模板 |
+|---|---|
+| 含 `gemma4` | `<\|turn\|>system...<\|turn\|>` |
+| 含 `gemma` / 默认 | `<start_of_turn>system...<start_of_turn>` |
+| 含 `qwen` | `<\|im_start\|>system...<\|im_end\|>` |
+| 未知 | 兜底 gemma3 格式 + 警告 |
+
+#### 5 个内置模板来源
+
+| 模型 | 模板风格 | 来源 |
+|---|---|---|
+| LTX 2.5 | 客观、镜头三要素（shot type + camera motion + viewpoint）、电影级 | 与 ComfyUI `TextGenerateLTX2Prompt` LTX24 系列同源 |
+| H3 | 三段式结构（integrated_multimodal_description / overall_soundscape / non_diegetic_music）+ Shot-based + 时间锚点 | `MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt` |
+| Z-Image | 自然语言 + 风格前缀 + 摄影术语 | 与 `ComfyUI-ZImagePowerNodes` style encoder 风格对齐 |
+| Krea-2 | 自然语言、详细、含具体细节（颜色/构图/灯光/视角） | 直接复用 `krea-2/docs/expansion.txt` 官方模板 |
+| Krea-2-Edit | 指令式 + 参考图描述 | 与 `Comfyui-QwenEditUtils` llama_template 风格一致 |
+
+#### 与 ZSimpleAgent 系列的区别
+
+| 节点 | LLM 来源 | 用途 |
+|---|---|---|
+| `ZSimpleAnthropicAgent` | 云端 Claude API | 通用 prompt 润色 |
+| `ZSimpleOpenAIAgent` | OpenAI 兼容 API（默认 Qwen DashScope） | 通用 prompt 扩写 |
+| `PromptEnhancePlus` | **本地 LLM**（Gemma/Qwen 通过 CLIP loader 加载） | **按目标模型训练 caption 风格**扩写 |
+
+#### 搜索别名
+
+`prompt enhance` / `LLM` / `prompt expander` / `gemma` / `qwen`
 
 </details>
 

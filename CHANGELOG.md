@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PromptEnhancePlus** — multi-model prompt optimizer driven by a local LLM (Gemma 3/4, Qwen, etc.). Accepts a short user prompt + optional image/video/audio, picks the right built-in system prompt for the chosen target model (LTX 2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit), formats it in the chat template expected by the loaded tokenizer, and returns the expanded prompt as a single STRING. Supports a custom template override that takes precedence over the built-in templates.
+
+  - **Inputs**: `clip`, `prompt`, `target_model` (Combo), `mode` (Combo, auto/T2V/T2I/I2V), `image`, `video`, `audio` (all optional), `custom_template` (multiline, optional), plus standard sampling params (`max_length`, `temperature`, `top_k`, `top_p`, `seed`).
+  - **Output**: `enhanced_prompt` STRING — `<think>` blocks stripped, empty output falls back to the original user prompt.
+  - **Built-in templates**:
+    - LTX 2.5 T2V / I2V — derived from ComfyUI's `TextGenerateLTX2Prompt` LTX24 system prompts (objective, framing triple, cinematic aesthetic).
+    - H3 T2V / I2V — three-field structure (`integrated_multimodal_description` / `overall_soundscape` / `non_diegetic_music`), shot-based timeline with time anchors; sourced from `MiniMax-H3/skills/h3-prompt-writing/references/base-en.txt`.
+    - Z-Image T2I — natural language with style prefix + photographic terminology.
+    - Krea-2 T2I — direct reuse of the official `krea-2/docs/expansion.txt` prompt.
+    - Krea-2-Edit I2V — image-grounded editing instruction format, matching `Comfyui-QwenEditUtils` llama_template style.
+  - **Chat-template auto-detection** (`_detect_tokenizer_family`): matches `gemma4` / `gemma` / `qwen` in `clip.tokenizer.clip_name`; falls back to gemma3 format with warning for unknown tokenizers.
+  - **Auto-mode** (`_resolve_mode`): picks I2V when image or video is connected, T2I for image-only target models, T2V otherwise; Krea-2-Edit forces I2V when an image is supplied.
+  - **Tests**: `tests/test_prompt_enhance_plus.py` — 27 tests covering template coverage, custom-template override, mode resolution, tokenizer-family detection, chat-format formatting per family, think-block stripping (closed + unclosed), end-to-end execute via fake CLIP, and node IO sanity. Self-contained via in-test `comfy_api.latest.io` stub so it runs without a real ComfyUI install.
+  - **Example workflow**: `examples/prompt_enhance_plus_smoke_test.json` — minimal 3-node flow (LoadCLIP → PromptEnhancePlus → ShowText).
+
 ### Changed
 
 - **ZLTXVideoTurboProgressive: rewrite multi-stage handoff (Z-Image style noise_inverse)**. The previous design used `_upscale_interpolate` (latent-space bilinear) or `_upscale_vae_roundtrip` (VAE decode → bilinear → encode) between stages, which produced visibly softer / blocky output because the next stage rebuilt detail from a low-pass-filtered latent. The new design treats each stage as running at a different *working scale* of the same final-size input latent and joins stages through Karras-EDM-style noise-phase handoff (mirrors Z-Image's `_noise_inverse`).
