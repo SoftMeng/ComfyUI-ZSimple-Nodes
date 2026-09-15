@@ -703,6 +703,9 @@ model 字段填对应端点支持的模型名即可。
 | `image` / `video` / `audio` | 可选多模态参考；连接 image/video 自动切 I2V，Krea-2-Edit 必须连接图 |
 | `max_length` / `temperature` / `top_k` / `top_p` / `seed` | 标准 LLM 采样参数 |
 
+> [!NOTE]
+> **输入语言**：可以传中文或英文 prompt（如「美女模特」或 "a beautiful model"）。Z-Image / LTX 2.5 / H3 / Krea-2 训练语料以**英文为主**，扩写后会输出英文 prompt（因配套 text encoder Qwen3-4B 是中英双语，英文 caption 质量更好）。想要中文输出扩写，用 `custom_template` 粘贴中文指令 + 示例。
+
 > [!TIP]
 > 内置 system prompt 以可编辑的 markdown 文件存放在 `model_system_prompt/` 文件夹下（如 `zimage_t2i.md`、`h3_t2v.md`），可直接修改文件内容自定义内置模板，无需改代码。
 
