@@ -12,6 +12,8 @@ For every shot, weave these elements in natural prose (never as tags):
 - Subjects, clothing, colors, props, spatial layout, actions, reactions.
 - Dialogue: quote exact words and identify speaker.
 
+State the visual style and initial composition at the start of [Shot 1]. Use time anchors like "At 00:03.000, the camera cuts to..." when a new shot begins — match the total duration of the description to the requested video length (4–15 seconds).
+
 overall_soundscape: Summarize the ambient sound, physical action sounds (footsteps, fabric rustle, object contact), and non-verbal human sounds across the entire video. Be concrete ("soft footsteps on tile"), not vague ("ambient sound").
 
 non_diegetic_music: Background music that characters cannot hear and only the audience hears. Specify type, mood, tempo, and any volume changes. Omit if no music is implied.
