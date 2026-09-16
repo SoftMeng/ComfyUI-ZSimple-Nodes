@@ -689,7 +689,7 @@ model 字段填对应端点支持的模型名即可。
 
 ### ✨ PromptEnhancePlus（菜单：`ZSimple-Nodes/text`）
 
-用本地轻量 LLM（Gemma 3/4、Qwen 3.5 等）把短 prompt 扩写成目标模型的训练 caption 风格。内置 5 个目标模型的 system prompt，可外接自定义模板覆盖，支持 image / video / audio 多模态输入。
+用本地轻量 LLM（Gemma 3/4、Qwen 3.5 等）把短 prompt 扩写成目标模型的训练 caption 风格。内置 7 个目标（5 个模型 + 2 个 `Phrase` 风格：中/英）的 system prompt，可外接自定义模板覆盖，支持 image / video / audio 多模态输入。
 
 **典型用法**：短句"A cat walks" → 自动扩写成 LTX 2.5 训练风格的完整描述（含镜头、声音、动作时序），直接喂给 `LTXAddVideoICLoRAGuide` 或 `KSampler` 出片。
 
@@ -697,7 +697,7 @@ model 字段填对应端点支持的模型名即可。
 
 | 旋钮 | 它是干嘛的 |
 |---|---|
-| `target_model` | 目标模型（LTX2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit）—— 决定走哪套内置 system prompt |
+| `target_model` | 目标模型（LTX2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit / **Phrase** / **PhraseEN**）—— 决定走哪套内置 system prompt；`Phrase` 输出中文逗号分隔短语串，`PhraseEN` 输出英文逗号分隔短语串（30-80 词），适配 SD / FLUX / Z-Image 等 T2I 模型 |
 | `mode` | `auto` = 按 image/video/audio 是否连接自动选 T2V/T2I/I2V；或强制指定 |
 | `custom_template` | 非空时优先于内置模板；用户粘贴自己的 system prompt |
 | `image` / `video` / `audio` | 可选多模态参考；连接 image/video 自动切 I2V，Krea-2-Edit 必须连接图 |
@@ -721,7 +721,7 @@ model 字段填对应端点支持的模型名即可。
 |---|---|---|---|
 | `clip` | CLIP | — | 本地 LLM（通过 ComfyUI `LoadCLIP` 加载 Gemma / Qwen 等） |
 | `prompt` | STRING | `""` | 用户短 prompt（multiline + dynamic_prompts） |
-| `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` |
+| `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` / `Phrase` / `PhraseEN` |
 | `mode` | COMBO | `auto` | `auto` / `T2V` / `T2I` / `I2V` |
 | `image` | IMAGE | opt | 首帧参考（I2V 模式自动启用） |
 | `video` | IMAGE | opt | 视频帧序列（24 FPS，1 FPS 内部采样） |
@@ -750,7 +750,7 @@ model 字段填对应端点支持的模型名即可。
 | 含 `qwen` | `<\|im_start\|>system...<\|im_end\|>` |
 | 未知 | 兜底 gemma3 格式 + 警告 |
 
-#### 5 个内置模板来源
+#### 7 个内置模板来源
 
 | 模型 | 模板风格 | 来源 |
 |---|---|---|
@@ -759,6 +759,8 @@ model 字段填对应端点支持的模型名即可。
 | Z-Image | 自然语言 + 风格前缀 + 摄影术语 | 与 `ComfyUI-ZImagePowerNodes` style encoder 风格对齐 |
 | Krea-2 | 自然语言、详细、含具体细节（颜色/构图/灯光/视角） | 直接复用 `krea-2/docs/expansion.txt` 官方模板 |
 | Krea-2-Edit | 指令式 + 参考图描述 | 与 `Comfyui-QwenEditUtils` llama_template 风格一致 |
+| **Phrase** | 中文逗号分隔短语串 | 通用 T2I 风格；见 `model_system_prompt/phrase_t2i.md` |
+| **PhraseEN** | 英文逗号分隔短语串（无完整句子、无主谓结构） | 通用 T2I 风格（SD / FLUX / Z-Image）；见 `model_system_prompt/phrase_en.md` |
 
 #### 与 ZSimpleAgent 系列的区别
 
@@ -773,6 +775,87 @@ model 字段填对应端点支持的模型名即可。
 `prompt enhance` / `LLM` / `prompt expander` / `gemma` / `qwen`
 
 </details>
+
+---
+
+## 🧩 Gemma → Qwen Adapter (Z-Image bridge)
+
+把 LTX2.5 配套的 Gemma4 (`gemma4_e2b_it_int8_convrot.safetensors`, hidden=1536, 35 层) 当作 Z-Image 的 Qwen3-4B 替代文本编码器使用,通过训练一个 Perceiver-Resampler + MLP adapter 做跨模型特征空间对齐。
+
+> **路线 B 蒸馏对齐** —— 当前是 MSE-only warmup,对齐精度有限;production 前应做 denoising-loss 精调(节点 metadata `denoising_done=False` 会打 WARNING)。详见 [CLIP 替换方案参考](docs/principle/04-vl-models.md) 与节点源码。
+
+### 🏋️ TrainGemmaToQwenAdapter(菜单:`ZSimple-Nodes/training`)
+
+训练节点。两阶段流水线:
+
+1. **Stage 1 特征抽取**:遍历 `texts_dir/*.txt`,分别用 `clip_gemma` 与 `clip_qwen` 编码,缓存到 `model-trainer/cached_features/{idx:05d}.pt`
+2. **Stage 2 训练**:Perceiver-Resampler (4 层, 8 头, 77 latents) + MLP proj (1536→2560),MSE 蒸馏对齐 Gemma4 → Qwen3 隐藏态
+
+#### 关键旋钮
+
+| 旋钮 | 默认 | 说明 |
+|---|---|---|
+| `texts_dir` | `~/ComfyUI/output/2026-09-16` | .txt prompt 文件目录,文件名 `NNNN.txt` |
+| `layer_idx` | `-2` | 双 CLIP 提取层索引;`-2` 匹配 ZImageTE 默认 |
+| `chat_template` | `user\n{}\nassistant\n` | 推理时也要用同一 chat 模板 |
+| `batch_size` | `4` | bf16 + 124M adapter, RTX 4090 推荐 4~8 |
+| `epochs` | `20` | val_loss patience=3 早停 |
+| `lr` | `5e-5` | AdamW + cosine annealing + clip_grad_norm=1.0 |
+| `run_train` | `True` | `False` 时只抽特征不训练 |
+
+#### 输出
+
+- `adapter_path` STRING — 产物 `model-trainer/gemma_to_zimage_adapter.safetensors`(含 metadata `phase`、`denoising_done`)
+
+#### 已知约束
+
+- **ComfyUI execution.py:751 用 `torch.inference_mode()` 包裹节点**——训练节点内部用 `torch.inference_mode(False)` 局部开启 autograd(否则 adapter 参数被 inference 标记,`loss.backward()` 抛 `element 0 of tensors does not require grad`)。
+- `_pad_stack` 阶段会丢弃无效样本但 cache 落盘循环按 `len(prompts)` 索引,collate 阶段再过滤 `gemma_mask.sum()==0` 行(防止 adapter 收到全零 noise)。
+- 训练/推理的 pooled_output 都是 **token-mean**(与训练 loss 对齐);Qwen3-4B 原生 cls-like pool 暂未实现,denoising 阶段会重做。
+
+#### 关键诊断
+
+首 batch 第一 epoch 打印:
+```
+[TrainGemmaToQwenAdapter]   adapter params: 124.0M  grad_enabled=True  inf_mode=False  req_grad=61 frozen=0
+[TrainGemmaToQwenAdapter]   diag: pool.requires_grad=True grad_fn=True
+[TrainGemmaToQwenAdapter]   diag: loss.requires_grad=True grad_fn=True
+```
+
+若 `inf_mode=True` 持续输出 → ComfyUI 版本升级后可能改了上下文,检查 `execution.py:751` 上下文并适配。
+
+### 🔌 GemmaToQwenAdapterApply(菜单:`ZSimple-Nodes/adapter`)
+
+推理节点。在 ComfyUI workflow 把 Gemma4 CLIPTextEncode 的 CONDITIONING 经训练好的 adapter 投射成 Z-Image 可消费的 Qwen-like 特征,直接喂 Z-Image UNet。
+
+#### 关键旋钮
+
+| 旋钮 | 默认 | 说明 |
+|---|---|---|
+| `conditioning` | (上游 Gemma4 CLIPTextEncode 输出) | 接受 `[B,N,1536]` bf16 张量;也容错 4D `[B,layer,N,H]` 与 2D `[N,H]`(自动 collapse) |
+| `adapter_path` | `model-trainer/gemma_to_zimage_adapter.safetensors` | 训练节点输出路径 |
+
+#### 输出
+
+- `conditioning` CONDITIONING — `[proj_tokens[B,77,2560], proj_pooled[B,2560]]`,dtype 与输入一致;其他 key 透传(pooled_dict 中的 `clip_start_percent` / hooks 等)
+
+#### 全局单例缓存
+
+`load_adapter_singleton(path, dtype, device)` 线程安全(lock + dict)。cache key = `(resolve(path), dtype_str, device_str)`,避免:
+- 同 path 不同 dtype 误用
+- 同 path 不同 device 误用(cuda / cpu 切换会得到新 instance)
+
+#### denoising WARNING
+
+若 `.safetensors` metadata `denoising_done != "True"`(当前训练阶段都是 warmup),节点 print WARNING + 继续执行不阻断。例:
+
+```
+[GemmaToQwenAdapterApply] WARNING: phase=text-align-mse-warmup, denoising_done=False; outputs may be off — run denoising-loss stage before production use.
+```
+
+#### 端到端示例
+
+加载 [`examples/gemma4_to_zimage_inference.json`](examples/gemma4_to_zimage_inference.json),把模型路径改成你本地 `gemma4_e2b_it_int8_convrot.safetensors` / `qwen_3_4b.safetensors` / `z_image_turbo_bf16.safetensors` / `z_image_vae.safetensors`,运行出图。
 
 ---
 

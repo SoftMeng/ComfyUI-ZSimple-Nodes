@@ -102,6 +102,8 @@ Classic V1-style: 5 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSi
   - **Gemma3 + image**: leaves text-only (gemma3 image-soft support unverified; let upstream decide).
   - **Text-only CLIPs (Z-Image TE / Lumina2 / Qwen3_4B) + image**: `execute()` raises a clear `ValueError` naming the offending class and the fix (load `Qwen2.5-VL-7B-Instruct` or `Qwen-Image-Edit` instead). These tokenizers silently drop `image=` kwarg — previously the run "succeeded" with the LLM never seeing the picture.
   - **Diagnostics**: every `execute()` prints `family` + port state + image tensor `shape/dtype/device` + `formatted_text_len` + a structured `tokenize` output summary (`batch=1 total_tokens=N embeds=K qwen_image_pad/... qwen_vision_start/end gemma4_image/video/audio top_ids=[...]`). Lets you confirm at runtime whether the image is actually injected as vision tokens.
+  - **Phrase output style** (`target_model="Phrase"`): outputs a single-line Chinese comma-separated phrase prompt for SD / FLUX / Z-Image etc. Independent of the model-specific caption templates — backed by `model_system_prompt/phrase_t2i.md`. T2I-only; `image` / `video` / `audio` ports are ignored. `_strip_think_blocks` keeps the output clean of chat preamble.
+  - **PhraseEN output style** (`target_model="PhraseEN"`): outputs a single-line ENGLISH comma-separated phrase prompt (no full sentences, no subject-verb structures) for SD / FLUX / Z-Image etc. Backed by `model_system_prompt/phrase_en.md`. T2I-only; `image` / `video` / `audio` ports are ignored. Format requirements are baked into the template as a numbered list (user-provided content).
 
 ## Adding a New Node
 

@@ -31,6 +31,8 @@ _TEMPLATE_FILES = {
     ("Z-Image", "T2I"): "zimage_t2i",
     ("Krea-2", "T2I"): "krea2_t2i",
     ("Krea-2-Edit", "I2V"): "krea2_edit_i2v",
+    ("Phrase", "T2I"): "phrase_t2i",
+    ("PhraseEN", "T2I"): "phrase_en",
 }
 
 

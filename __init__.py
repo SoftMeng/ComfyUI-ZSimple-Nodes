@@ -1,3 +1,4 @@
+from .nodes.gemma_to_qwen_adapter_apply import GemmaToQwenAdapterApply
 from .nodes.random_number_plus import RandomNumberPlus
 from .nodes.save_image_plus import SaveImagePlus
 from .nodes.save_text_plus import SaveTextPlus
@@ -7,6 +8,7 @@ from .nodes.z_simple_openai_agent import ZSimpleOpenAIAgent
 from .nodes.zimage_turbo_progressive import ZImageTurboProgressive
 from .nodes.ltx_video_turbo_progressive import ZLTXVideoTurboProgressive
 from .nodes.prompt_enhance_plus import PromptEnhancePlus
+from .nodes.train_gemma_qwen_adapter import TrainGemmaToQwenAdapter
 
 NODE_CLASS_MAPPINGS = {
     "RandomNumberPlus": RandomNumberPlus,
@@ -18,6 +20,8 @@ NODE_CLASS_MAPPINGS = {
     "ZSimpleOpenAIAgent": ZSimpleOpenAIAgent,
     "ZLTXVideoTurboProgressive": ZLTXVideoTurboProgressive,
     "PromptEnhancePlus": PromptEnhancePlus,
+    "TrainGemmaToQwenAdapter": TrainGemmaToQwenAdapter,
+    "GemmaToQwenAdapterApply": GemmaToQwenAdapterApply,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -30,6 +34,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "ZSimpleOpenAIAgent": "ZSimple OpenAI Agent",
     "ZLTXVideoTurboProgressive": "Z-LTX Video Turbo Progressive",
     "PromptEnhancePlus": "Prompt Enhance Plus",
+    "TrainGemmaToQwenAdapter": "Train Gemma→Qwen Adapter (Z-Image)",
+    "GemmaToQwenAdapterApply": "Apply Gemma→Qwen Adapter (Z-Image)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

@@ -9,7 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **PromptEnhancePlus** — multi-model prompt optimizer driven by a local LLM (Gemma 3/4, Qwen, etc.). Accepts a short user prompt + optional image/video/audio, picks the right built-in system prompt for the chosen target model (LTX 2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit), formats it in the chat template expected by the loaded tokenizer, and returns the expanded prompt as a single STRING. Supports a custom template override that takes precedence over the built-in templates.
+- **`GemmaToQwenAdapterApply` node** (menu `ZSimple-Nodes/adapter`) — projects a Gemma4-encoded CONDITIONING through a trained Perceiver-Resampler adapter so Z-Image UNet reads it as native Qwen3-4B features. Inputs: `conditioning` (CONDITIONING), `adapter_path` (STRING). Output: `conditioning` (CONDITIONING). Schema collapses 4D `[B,layer,N,H]` and 2D `[N,H]` inputs to 3D before projection. Emits WARNING when `denoising_done=False` metadata is read from the adapter checkpoint.
+
+- **`TrainGemmaToQwenAdapter` node** (menu `ZSimple-Nodes/training`) — two-stage pipeline: (1) extract Gemma4 + Qwen3 hidden states per prompt into `model-trainer/cached_features/{idx:05d}.pt`; (2) train `GemmaToZImageAdapter` (Perceiver-Resampler + MLP) with MSE distillation, save `.safetensors`. Input ports: `clip_gemma`, `clip_qwen`, `texts_dir`, `layer_idx`, `chat_template`, `batch_size`, `epochs`, `lr`, `patience`, `run_train`. Output: `adapter_path` STRING.
+
+- **`nodes/_gemma_adapter_common.py`** — shared module: `PerceiverResamplerBlock` + `GemmaToZImageAdapter` network definition, `load_adapter_singleton(path, dtype, device)` thread-safe singleton cache (cache key includes path + dtype + device), `apply_adapter_to_gemma_embeds(adapter, embeds, mask)` inference helper wrapped in `torch.inference_mode()`. Constants: `GEMMA_HIDDEN=1536`, `QWEN_HIDDEN=2560`, `NUM_LATENTS=77`, `DEFAULT_DTYPE=torch.bfloat16`.
+
+- **`examples/gemma4_to_zimage_inference.json`** — end-to-end Z-Image wiring: `CLIPLoader(Gemma4)` → `CLIPTextEncode` × 2 → `GemmaToQwenAdapterApply` × 2 (positive + negative) → `KSampler` → `VAEDecode` → `SaveImage`. Placeholder model paths use `/path/to/your/...`.
+
+- **Tests**:
+  - `tests/test_train_gemma_qwen_adapter_dryrun.py` (4 tests) — `_collate` zero-mask filter, fp32 loss path, full `_train_adapter` under `torch.inference_mode()` outer context, runtime diagnostics assertions.
+  - `tests/test_gemma_to_qwen_adapter_apply_dryrun.py` (7 tests) — forward shape, full `execute` against a random adapter.safetensors, 4D/2D dim collapse, error paths (wrong hidden_size → RuntimeError; missing path → FileNotFoundError), `denoising_done=False` WARNING emission.
+
+- **PromptEnhancePlus** — multi-model prompt optimizer driven by a local LLM (Gemma 3/4, Qwen, etc.). Accepts a short user prompt + optional image/video/audio, picks the right built-in system prompt for the chosen target model (LTX 2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit / Phrase / PhraseEN), formats it in the chat template expected by the loaded tokenizer, and returns the expanded prompt as a single STRING. Supports a custom template override that takes precedence over the built-in templates.
 
   - **Inputs**: `clip`, `prompt`, `target_model` (Combo), `mode` (Combo, auto/T2V/T2I/I2V), `image`, `video`, `audio` (all optional), `custom_template` (multiline, optional), plus standard sampling params (`max_length`, `temperature`, `top_k`, `top_p`, `seed`).
   - **Output**: `enhanced_prompt` STRING — `<think>` blocks stripped, empty output falls back to the original user prompt.
@@ -19,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Z-Image T2I — natural language with style prefix + photographic terminology.
     - Krea-2 T2I — direct reuse of the official `krea-2/docs/expansion.txt` prompt.
     - Krea-2-Edit I2V — image-grounded editing instruction format, matching `Comfyui-QwenEditUtils` llama_template style.
+    - **Phrase T2I** — single-line Chinese comma-separated phrase prompt for SD / FLUX / Z-Image etc. T2I-only; ignores `image` / `video` / `audio` ports. Backed by `model_system_prompt/phrase_t2i.md`.
+    - **PhraseEN T2I** — single-line English comma-separated phrase prompt (no full sentences, no subject-verb structures) for SD / FLUX / Z-Image etc. T2I-only; ignores `image` / `video` / `audio` ports. Backed by `model_system_prompt/phrase_en.md` (user-provided template with explicit numbered format requirements).
   - **Chat-template auto-detection** (`_detect_tokenizer_family`): matches `gemma4` / `gemma` / `qwen` in `clip.tokenizer.clip_name`; falls back to gemma3 format with warning for unknown tokenizers.
   - **Auto-mode** (`_resolve_mode`): picks I2V when image or video is connected, T2I for image-only target models, T2V otherwise; Krea-2-Edit forces I2V when an image is supplied.
   - **Tests**: `tests/test_prompt_enhance_plus.py` — 27 tests covering template coverage, custom-template override, mode resolution, tokenizer-family detection, chat-format formatting per family, think-block stripping (closed + unclosed), end-to-end execute via fake CLIP, and node IO sanity. Self-contained via in-test `comfy_api.latest.io` stub so it runs without a real ComfyUI install.

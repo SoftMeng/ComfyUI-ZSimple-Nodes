@@ -408,6 +408,51 @@ def _stage3_chain_step(model, x0_latent, sigmas, cond, negative, cfg, sampler3,
     return adjust_latent_size(out, target_size=(target_h, target_w))
 
 
+def _wrap_apg_for_shape_changes(model):
+    # APG pre_cfg 的 running_avg 闭包跨 stage 残留会撞 dim，wrapper 在 shape 变化时用一次 crafted sigma 强制其走 reset 分支。
+    pre_cfg_list = model.model_options.get("sampler_pre_cfg_function", [])
+    if not pre_cfg_list:
+        return
+    new_list = []
+    for original_fn in pre_cfg_list:
+        last_shape = [None]
+
+        def _wrapper(args, _orig=original_fn, _last_shape=last_shape):
+            conds_out = args.get("conds_out") or []
+            current_shape = None
+            if conds_out and torch.is_tensor(conds_out[0]):
+                current_shape = tuple(conds_out[0].shape)
+            if (_last_shape[0] is not None
+                    and current_shape is not None
+                    and current_shape != _last_shape[0]
+                    and len(conds_out) >= 2):
+                sigma_t = args.get("sigma")
+                if torch.is_tensor(sigma_t):
+                    sigma_device, sigma_dtype = sigma_t.device, sigma_t.dtype
+                else:
+                    sigma_device, sigma_dtype = "cpu", torch.float32
+                crafted_args = {
+                    "conds": args.get("conds"),
+                    "conds_out": [conds_out[0], conds_out[1]],
+                    "cond_scale": args.get("cond_scale", 1.0),
+                    "timestep": args.get("timestep"),
+                    "input": args.get("input"),
+                    "sigma": torch.tensor([1e10], device=sigma_device, dtype=sigma_dtype),
+                    "model": args.get("model"),
+                    "model_options": args.get("model_options"),
+                }
+                try:
+                    _orig(crafted_args)
+                except Exception:
+                    pass
+            if current_shape is not None:
+                _last_shape[0] = current_shape
+            return _orig(args)
+
+        new_list.append(_wrapper)
+    model.model_options["sampler_pre_cfg_function"] = new_list
+
+
 class ZImageTurboProgressive(io.ComfyNode):
 
     @classmethod
@@ -481,6 +526,8 @@ class ZImageTurboProgressive(io.ComfyNode):
                 stage3_chain_mode: str = "chain",
                 stage_handoff_mode: str = "legacy",
                 positive: list | None = None) -> io.NodeOutput:
+
+        _wrap_apg_for_shape_changes(model)
 
         add_noise_bool = add_noise == "enable"
         return_noise_bool = return_leftover_noise == "enable"
