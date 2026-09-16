@@ -1,0 +1,103 @@
+{
+  "id": "prompt-enhance-plus-smoke-test-0001",
+  "revision": 0,
+  "last_node_id": 4,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadCLIP",
+      "pos": [30, 30],
+      "size": [320, 80],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CLIP", "type": "CLIP", "links": [1]}
+      ],
+      "properties": {"Node name for S&R": "LoadCLIP"},
+      "widgets_values": ["gemma-3-1b-it-qat-q4_0-unquantized.safetensors", "default"]
+    },
+    {
+      "id": 2,
+      "type": "PromptEnhancePlus",
+      "pos": [420, 30],
+      "size": [320, 280],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip", "type": "CLIP", "link": 1},
+        {"name": "prompt", "type": "STRING", "widget": {"name": "prompt"}, "link": null},
+        {"name": "target_model", "type": "COMBO", "widget": {"name": "target_model"}, "link": null},
+        {"name": "mode", "type": "COMBO", "widget": {"name": "mode"}, "link": null},
+        {"name": "custom_template", "type": "STRING", "widget": {"name": "custom_template"}, "link": null},
+        {"name": "max_length", "type": "INT", "widget": {"name": "max_length"}, "link": null},
+        {"name": "temperature", "type": "FLOAT", "widget": {"name": "temperature"}, "link": null},
+        {"name": "top_k", "type": "INT", "widget": {"name": "top_k"}, "link": null},
+        {"name": "top_p", "type": "FLOAT", "widget": {"name": "top_p"}, "link": null},
+        {"name": "seed", "type": "INT", "widget": {"name": "seed"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "enhanced_prompt", "type": "STRING", "links": [2]}
+      ],
+      "properties": {"Node name for S&R": "PromptEnhancePlus"},
+      "widgets_values": [
+        "A woman walks her dog in a sunny park",
+        "LTX2.5",
+        "auto",
+        "",
+        256,
+        0.7,
+        64,
+        0.95,
+        0
+      ]
+    },
+    {
+      "id": 3,
+      "type": "ShowText",
+      "pos": [820, 30],
+      "size": [400, 200],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 2}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "ShowText"},
+      "widgets_values": ["enhanced_prompt"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "CLIP"],
+    [2, 2, 0, 3, 0, "STRING"]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "1 - Load LLM via CLIP",
+      "bounding": [0, 0, 380, 130],
+      "color": "#3f5159",
+      "flags": {}
+    },
+    {
+      "id": 2,
+      "title": "2 - Prompt Enhance Plus (LLM expand)",
+      "bounding": [390, 0, 380, 360],
+      "color": "#8A8",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9091,
+      "offset": [0, 60]
+    },
+    "frontendVersion": "1.51.9"
+  },
+  "version": 0.4
+}
