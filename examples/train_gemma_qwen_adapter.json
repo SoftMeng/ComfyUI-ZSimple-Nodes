@@ -1,0 +1,103 @@
+{
+  "id": "train-gemma-qwen-adapter-0001",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 5,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "LoadCLIP",
+      "pos": [30, 30],
+      "size": [320, 80],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CLIP", "type": "CLIP", "links": [1]}
+      ],
+      "properties": {"Node name for S&R": "LoadCLIP_Gemma4"},
+      "widgets_values": ["gemma4_e2b_it_int8_convrot.safetensors", "default"]
+    },
+    {
+      "id": 2,
+      "type": "LoadCLIP",
+      "pos": [30, 180],
+      "size": [320, 80],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "CLIP", "type": "CLIP", "links": [2]}
+      ],
+      "properties": {"Node name for S&R": "LoadCLIP_Qwen3"},
+      "widgets_values": ["qwen_3_4b.safetensors", "default"]
+    },
+    {
+      "id": 3,
+      "type": "TrainGemmaToQwenAdapter",
+      "pos": [420, 30],
+      "size": [420, 320],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "clip_gemma", "type": "CLIP", "link": 1},
+        {"name": "clip_qwen", "type": "CLIP", "link": 2},
+        {"name": "texts_dir", "type": "STRING", "widget": {"name": "texts_dir"}, "link": null},
+        {"name": "layer_idx", "type": "INT", "widget": {"name": "layer_idx"}, "link": null},
+        {"name": "chat_template", "type": "STRING", "widget": {"name": "chat_template"}, "link": null},
+        {"name": "batch_size", "type": "INT", "widget": {"name": "batch_size"}, "link": null},
+        {"name": "epochs", "type": "INT", "widget": {"name": "epochs"}, "link": null},
+        {"name": "lr", "type": "FLOAT", "widget": {"name": "lr"}, "link": null},
+        {"name": "patience", "type": "INT", "widget": {"name": "patience"}, "link": null},
+        {"name": "run_train", "type": "BOOLEAN", "widget": {"name": "run_train"}, "link": null}
+      ],
+      "outputs": [
+        {"name": "adapter_path", "type": "STRING", "links": [3]}
+      ],
+      "properties": {"Node name for S&R": "TrainGemmaToQwenAdapter"},
+      "widgets_values": [
+        "/home/jiaoma/文档/jmapplication/ComfyUI/output/2026-09-16",
+        -2,
+        "user\n{}\nassistant\n",
+        4,
+        20,
+        0.00005,
+        3,
+        true
+      ]
+    },
+    {
+      "id": 4,
+      "type": "ShowText",
+      "pos": [920, 30],
+      "size": [400, 200],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "text", "type": "STRING", "link": 3}
+      ],
+      "outputs": [],
+      "properties": {"Node name for S&R": "ShowText"},
+      "widgets_values": ["adapter_path"]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 3, 0, "CLIP"],
+    [2, 2, 0, 3, 1, "CLIP"],
+    [3, 3, 0, 4, 0, "STRING"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9091,
+      "offset": [0, 60]
+    },
+    "frontendVersion": "1.51.9"
+  },
+  "version": 0.4
+}
