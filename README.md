@@ -706,6 +706,9 @@ model 字段填对应端点支持的模型名即可。
 > [!NOTE]
 > **输入/输出语言**：Z-Image 是 **Tongyi-MAI（阿里达摩院）** 发布的双语模型，HF 官方 model card 一再强调 *"bilingual text rendering (English & Chinese)"*。`PromptEnhancePlus` 内置 Z-Image 模板默认输出**中文 caption**（保留"汉服/大雁塔/龙"等中文专属实体）；用户输入可以是中文或英文。要英文 caption，用 `custom_template` 粘贴英文版 Krea-2 官方 expansion prompt 覆盖。
 
+> [!IMPORTANT]
+> **Image 多模态需要视觉语言 CLIP**：`image` 输入端口接受首帧参考图，但只有加载视觉语言 CLIP（`Qwen2.5-VL-7B-Instruct` / `Qwen-Image-Edit` / `Gemma4-12B+` 等）时图片才会真正影响扩写内容。普通文本编码器（`qwen3_4b.safetensors` 即 Z-Image TE、`Lumina2` 等）会**静默丢弃** `image` 输入——本节点在检测到这种不匹配时会主动 raise 提示，避免"看似跑通但实际零效果"的误判。每轮 execute 都会在控制台打印诊断日志（family / formatted_text_len / image tensor / tokenize output 含 vision token 计数），用于确认 image 是否被真正注入。
+
 > [!TIP]
 > 内置 system prompt 以可编辑的 markdown 文件存放在 `model_system_prompt/` 文件夹下（如 `zimage_t2i.md`、`h3_t2v.md`），可直接修改文件内容自定义内置模板，无需改代码。
 

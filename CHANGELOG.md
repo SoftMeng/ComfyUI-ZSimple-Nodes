@@ -24,6 +24,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Tests**: `tests/test_prompt_enhance_plus.py` — 27 tests covering template coverage, custom-template override, mode resolution, tokenizer-family detection, chat-format formatting per family, think-block stripping (closed + unclosed), end-to-end execute via fake CLIP, and node IO sanity. Self-contained via in-test `comfy_api.latest.io` stub so it runs without a real ComfyUI install.
   - **Example workflow**: `examples/prompt_enhance_plus_smoke_test.json` — minimal 3-node flow (LoadCLIP → PromptEnhancePlus → ShowText).
 
+### Added (recent)
+
+- **PromptEnhancePlus runtime diagnostics**: every execute() now prints the resolved tokenizer family, image/video/audio port state, image tensor shape/dtype/device, formatted-text length, and a structured summary of the tokenize output dict (batch / total_tokens / top token ids / vision-marker counts for qwen-vl `image_pad` / `vision_start` / `vision_end` and gemma4 `image` / `video` / `audio`). Lets you confirm at a glance whether the image you wired is actually being injected as vision tokens, instead of guessing from the final prompt text.
+
+- **PromptEnhancePlus chat-residue stripping**: `_REASONING_PREFIXES` and `_REASONING_KEYWORDS` now cover English chat preamble (`assistant:` / `as an ai` / `as an assistant` / `as a language model` / `i'm an ai` / `i am an assistant`) and Chinese chat preamble (`好的，` / `首先，` / `作为一个人工智能` / `我是一个 AI` / `我是一个大语言模型` / `我需要` / `让我`). The LLM no longer leaks "assistant: ..." or "好的，我会..." as the first sentence of the expanded prompt.
+
+### Fixed
+
+- **PromptEnhancePlus image pipeline (Gemma4)** — `<|image><|image|><image|>` is now hardcoded in the user turn when `image` is connected on the Gemma4 family (mirrors ComfyUI's `TextGenerateLTX2Prompt` at `comfy_extras/nodes_textgen.py:242`). Earlier "B方案" refactor over-pruned all image placeholders, which left Gemma4's tokenize with no placeholders to replace — the LLM was receiving the user text but no vision tokens at all.
+
+- **PromptEnhancePlus text-only CLIP guard** — when the loaded CLIP is a text-only encoder (`ZImageTEModel_` / `Lumina2` / `Qwen3_4B`) and an image is wired, the node now raises a clear `ValueError` with the fix suggestion ("load a vision-language CLIP such as Qwen2.5-VL-7B-Instruct or Qwen-Image-Edit"). Previously the image was silently dropped by the tokenizer's `tokenize_with_weights(**kwargs)` signature, producing zero-effect runs that looked successful.
+
+- **zimage_t2i.md image-aware instruction** — the built-in Z-Image template now tells the LLM to explicitly describe the image's visual elements (subject, composition, lighting, style) when the `image` input port is connected, instead of focusing only on the text prompt. Without this, the LLM received vision tokens but its system prompt told it to ignore them.
+
+### Changed
+
+- **PromptEnhancePlus `_format_chat` per-family image handling**:
+  - `gemma4` + image → `<|image><|image|><image|>\n\n` prepended to user turn (matches upstream pattern; gemma4 tokenize replaces 3 placeholders with 1 image embed).
+  - `qwen` + image → user turn stays text-only (qwen35 tokenize injects `<|vision_start|><|image_pad|><|vision_end|>` itself; writing it manually would falsely trigger `qwen35.py:744`'s skip_template path).
+  - `gemma3` + image → user turn stays text-only (gemma3 image-soft support is unverified; let upstream decide).
+
 ### Changed
 
 - **ZLTXVideoTurboProgressive: rewrite multi-stage handoff (Z-Image style noise_inverse)**. The previous design used `_upscale_interpolate` (latent-space bilinear) or `_upscale_vae_roundtrip` (VAE decode → bilinear → encode) between stages, which produced visibly softer / blocky output because the next stage rebuilt detail from a low-pass-filtered latent. The new design treats each stage as running at a different *working scale* of the same final-size input latent and joins stages through Karras-EDM-style noise-phase handoff (mirrors Z-Image's `_noise_inverse`).
