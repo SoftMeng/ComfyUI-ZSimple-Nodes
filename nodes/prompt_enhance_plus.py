@@ -31,6 +31,7 @@ _TEMPLATE_FILES = {
     ("Z-Image", "T2I"): "zimage_t2i",
     ("Krea-2", "T2I"): "krea2_t2i",
     ("Krea-2-Edit", "I2V"): "krea2_edit_i2v",
+    ("Seedance", "T2V"): "seedance_t2v",
     ("Phrase", "T2I"): "phrase_t2i",
     ("PhraseEN", "T2I"): "phrase_en",
     ("Flux", "T2I"): "phrase_flux",
@@ -142,7 +143,7 @@ def _resolve_mode(mode: str, *, image, video, target_model: str) -> str:
     has_visual = image is not None or video is not None  # OR-combined
     if target_model == "Krea-2-Edit":
         return "I2V" if has_visual else "T2I"
-    if target_model in ("Z-Image", "Krea-2"):
+    if target_model in ("Z-Image", "Krea-2", "Phrase", "PhraseEN", "Flux"):
         return "T2I"
     # LTX2.5, H3 — video models
     return "I2V" if has_visual else "T2V"

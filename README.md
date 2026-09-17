@@ -27,6 +27,7 @@
 | **SaveTextPlus** | prompt / workflow 文本需要临时存档 | 把提示词和工作流 JSON 存到本地，再也不怕改坏了找不回上一版 |
 | **SaveVideoPlus** | 视频帧序列需要保存为 mp4/webm/gif | mp4(libx264) / webm(libvpx-vp9 恒定质量) / gif(PIL) 三格式；frame_rate / quality / loop_count / pingpong / metadata embed；STRING 输出文件名+帧数；客户端进程 try/finally 清理 |
 | **ZImageTurboProgressive** | Z-Image Turbo 单节点缺少统一的 3 阶段 progressive sampling 编排 | Z-Image Turbo 的三段式采样器：先粗画、再细化、最后出大图，全在一个节点里完成 |
+| **ZImageUpscalePlus** | 已有图片/latent 想用 Z-Image Turbo 渐进放大+精修，缺一个单节点封装 | 渐进放大 + 末级精修；v2 支持 sigma preset 选择（alpha_3..alpha_10 + bravo_8）+ tiled upscale_model 接通 + partial denoise 末级精修 |
 | **ZLTXVideoTurboProgressive** | LTX2.5 多模态视频工作流需要 14+ LTXV 算子节点堆叠 | LTX2.5 视频两阶段渐进式采样（Stage1 低分辨率 + ×2 升频 + Stage2 高分辨率）；多模态文本/参考图/音频单节点配置 |
 | **ZSimpleAnthropicAgent** | 短 prompt 扩写 / 文案润色需要写规则、调 API | 通过本地 Anthropic 代理调用 Claude Messages API；system prompt 从 markdown 文件下拉选择；STRING → STRING；API 失败直接 raise |
 | **ZSimpleOpenAIAgent** | 短 prompt 需要调用 OpenAI 兼容 API（默认 Qwen）扩写 | 节点参数全自包含（model/api_key/base_url/temperature/max_tokens）；默认指向阿里云 DashScope Qwen；STRING → STRING；空 api_key 或 API 失败直接 raise |
@@ -272,6 +273,55 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 `save` / `save video` / `export` / `mp4` / `webm` / `gif`
 
 </details>
+
+---
+
+### 🖼️ ZImageUpscalePlus（菜单：`ZSimple-Nodes/image`）
+
+用 Z-Image Turbo 把已有 latent 渐进放大 + 末级精修。多 stage 走 `upscale_factor`，每 stage 之间用 locked noise 桥接保持结构稳定；末级走 partial denoise 精修避免细节失真。
+
+**典型用法**：把 KSampler 的 latent 输出连进来，设定 `upscale_factor=6.0` 就拿到 6× 分辨率的 latent。最小连线只需 `latent_input` + `model`；想用像素放大模型就连 `upscale_model` + `vae`（VAE 做 latent↔image round-trip），想换末级精修 model 就连 `refinement_model`。
+
+#### 关键旋钮
+
+| 输入 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `latent_input` | LATENT | 必填 | 要放大的源 latent |
+| `model` | MODEL | 必填 | 主模型（也作为默认末级精修 model） |
+| `vae` | VAE | 可选 | 接 `upscale_model` 时必填，做 latent↔image round-trip |
+| `upscale_model` | UpscaleModel | 可选 | 像素 upscale 模型（RealESRGAN 等），tiled OOM 重试 |
+| `upscale_factor` | FLOAT (1.0–24.0) | 6.0 | 目标放大倍数 |
+| `max_step_scale` | FLOAT (1.1–6.0) | 1.6 | 单 stage 最大缩放倍率，超过则拆多 stage |
+| `sigma_preset` | COMBO | `alpha_8` | Z-Image Turbo 蒸馏 sigma preset（`alpha_3..alpha_10` + `bravo_8`） |
+| `tail_steps_first_upscale` | INT (1–12) | 6 | 非末级 stage 采样步数 |
+| `tail_steps_last_upscale` | INT (1–12) | 3 | 末级精修采样步数 |
+| `refinement_model` | MODEL | 可选 | 末级精修 model，默认走 `model` |
+| `sampler` | COMBO | `euler` | 采样器 |
+| `scheduler` | COMBO | `normal` | 调度器 |
+| `denoise` | FLOAT (0.0–1.0) | 0.6 | 末级精修 denoise，1.0=full schedule，0.6=保留 40% 内容 |
+| `seed` | INT | 0 | 随机种子（+stage_idx 偏移生成各 stage 子种子） |
+| `positive` | CONDITIONING | 可选 | 正向条件；`cfg=1.0` 时 guidance 被屏蔽但保留 hook |
+| `negative` | CONDITIONING | 可选 | 负向条件；同上 |
+
+<details>
+<summary>完整输入 / 输出</summary>
+
+- 输入：见上表（17 项）
+- 输出：`LATENT` — 放大后的 latent
+
+</details>
+
+#### 设计要点
+
+- **Locked noise handoff**：每 stage 用 `_PARTITION_CACHE` 缓存的 partition map 把上一 stage 的 noise 升频到当前 scale 的 shape，并锁定低频成分；新高频部分用正交补采填充，保持结构稳定。
+- **Karras-EDM noise_inverse**：stage 间可选走 `_noise_inverse` 桥接（`(1-sigma)*x0 + sigma*noise`），让下一 stage 入口的 noise phase 对齐上一 stage 出口。
+- **Partial denoise 末级精修**：末级 stage 用 `force_full_denoise=False` + 用户 `denoise`，保留原 latent 的内容主体，只精修细节。
+- **可选 text conditioning**：`positive` / `negative` 已接入 `_stage_sample_with_sigmas` 的 conditioning 链；`cfg=1.0` 下 guidance 被屏蔽，但保留扩展位便于未来 cfg>1.0 场景。
+
+#### 限制
+
+- `_PARTITION_CACHE` 线程不安全——与 `ZImageTurboProgressive` 共享，不要并发跑多个实例。
+- `upscale_model` 必须同时连 `vae`，否则走 bilinear 兜底。
 
 ---
 

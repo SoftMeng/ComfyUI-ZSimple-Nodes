@@ -13,6 +13,20 @@ import comfy.utils
 
 import latent_preview
 
+from ._sample_common import _stage_sample_with_sigmas
+
+from ._partition_common import (
+    _PARTITION_CACHE,
+    _build_partition_map,
+    _reduce_height,
+    _expand_height,
+    _reduce_width,
+    _expand_width,
+    _project_to_coarse_subspace,
+    _lift_noise,
+    _locked_noise_from_prev,
+)
+
 
 SAMPLER_NAMES = comfy.samplers.SAMPLER_NAMES
 
@@ -242,78 +256,7 @@ def _inject_low_freq_noise(x, seed, freq=1024, scale=0.8):
 
 # TODO thread-safety: _PARTITION_CACHE is a module-level dict; concurrent
 # ZImageTurboProgressive instances may race. Mirrors C2 (ZImageTurboProgressiveLockedUpscale).
-_PARTITION_CACHE = {}
-
-
-def _build_partition_map(low_n: int, high_n: int, device):
-    if high_n < low_n:
-        raise ValueError(f"Partition requires high_n >= low_n, got {high_n} < {low_n}")
-    key = (low_n, high_n, device.type)
-    if key in _PARTITION_CACHE:
-        return _PARTITION_CACHE[key]
-    base = high_n // low_n
-    rem = high_n % low_n
-    counts = torch.full((low_n,), base, dtype=torch.long, device=device)
-    if rem > 0:
-        counts[:rem] += 1
-    map_hi_to_lo = torch.repeat_interleave(torch.arange(low_n, device=device), counts)
-    inv_sqrt = (counts.float().rsqrt())[map_hi_to_lo]
-    _PARTITION_CACHE[key] = (map_hi_to_lo, inv_sqrt, counts)
-    return map_hi_to_lo, inv_sqrt, counts
-
-
-def _reduce_height(x, map_h, inv_sqrt_h, low_h):
-    B, C, Hh, W = x.shape
-    out = torch.zeros((B, C, low_h, W), device=x.device, dtype=x.dtype)
-    out.index_add_(2, map_h, x * inv_sqrt_h.view(1, 1, Hh, 1))
-    return out
-
-
-def _expand_height(coeff, map_h, inv_sqrt_h):
-    Hh = map_h.shape[0]
-    return coeff.index_select(2, map_h) * inv_sqrt_h.view(1, 1, Hh, 1)
-
-
-def _reduce_width(x, map_w, inv_sqrt_w, low_w):
-    B, C, H, Ww = x.shape
-    out = torch.zeros((B, C, H, low_w), device=x.device, dtype=x.dtype)
-    out.index_add_(3, map_w, x * inv_sqrt_w.view(1, 1, 1, Ww))
-    return out
-
-
-def _expand_width(coeff, map_w, inv_sqrt_w):
-    Ww = map_w.shape[0]
-    return coeff.index_select(3, map_w) * inv_sqrt_w.view(1, 1, 1, Ww)
-
-
-def _project_to_coarse_subspace(x, low_h, low_w, high_h, high_w, device):
-    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
-    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
-    tmp = _reduce_width(x, map_w, inv_w, low_w)
-    coeff = _reduce_height(tmp, map_h, inv_h, low_h)
-    return _expand_width(_expand_height(coeff, map_h, inv_h), map_w, inv_w)
-
-
-def _lift_noise(eps_prev, high_h, high_w):
-    device = eps_prev.device
-    low_h, low_w = eps_prev.shape[-2], eps_prev.shape[-1]
-    map_h, inv_h, _ = _build_partition_map(low_h, high_h, device)
-    map_w, inv_w, _ = _build_partition_map(low_w, high_w, device)
-    return _expand_width(_expand_height(eps_prev, map_h, inv_h), map_w, inv_w)
-
-
-def _locked_noise_from_prev(eps_prev, target_shape, seed_new):
-    device = eps_prev.device
-    dtype = eps_prev.dtype
-    B, C, H1, W1 = target_shape
-    H0, W0 = eps_prev.shape[-2], eps_prev.shape[-1]
-    g = torch.Generator(device=device)
-    g.manual_seed(seed_new)
-    eta = torch.randn((B, C, H1, W1), generator=g, device=device, dtype=dtype)
-    proj = _project_to_coarse_subspace(eta, H0, W0, H1, W1, device)
-    eta_perp = eta - proj
-    lifted = _lift_noise(eps_prev, H1, W1)
-    return lifted + eta_perp
+# _PARTITION_CACHE is imported from ._partition_common (shared with ZImageUpscalePlus).
 
 
 def _estimate_initial_noise_features(model, positive, negative, sampler_obj,
@@ -342,7 +285,8 @@ def _noise_inverse(model, x0: torch.Tensor, sigma_target: float, noise_seed: int
 def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigmas,
                    noise_seed, noise_scale=1.0, noise_bias=0.0,
                    add_noise=True, force_final_denoise=False,
-                   eps_external=None, last_stage_eps: bool = False):
+                   eps_external=None, last_stage_eps: bool = False,
+                   sampler_name: str = ""):
     latent = _coerce_latent(latent)
     device = comfy.model_management.get_torch_device()
     x0 = latent["samples"].to(device)
@@ -354,16 +298,19 @@ def _stage_denoise(model, latent, conditioning, negative, cfg, sampler_obj, sigm
                               noise_bias=noise_bias, dtype=x0.dtype, device=device)
     if not add_noise:
         eps = torch.zeros_like(eps)
-    if force_final_denoise and sigmas[-1] != 0:
-        sigmas = sigmas.clone()
-        sigmas[-1] = 0
-    callback = latent_preview.prepare_callback(model, max(1, len(sigmas) - 1))
-    samples = comfy.sample.sample_custom(
-        model, eps, cfg, sampler_obj, sigmas,
-        conditioning, negative, x0,
-        noise_mask=None, callback=callback,
-        disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
+    samples = _stage_sample_with_sigmas(
+        model=model,
+        latent_image=x0,
+        noise=eps,
+        cfg=cfg,
+        sampler_obj=sampler_obj,
+        sigmas=sigmas,
+        callback=None,
         seed=noise_seed,
+        force_full_denoise=force_final_denoise,
+        conditioning=conditioning,
+        negative=negative,
+        sampler_name=sampler_name,
     )
     out = {"samples": samples}
     if last_stage_eps:

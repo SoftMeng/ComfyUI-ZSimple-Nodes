@@ -32,6 +32,10 @@ model_system_prompt/         # PromptEnhancePlus built-in .md templates (editabl
 system_prompt/               # ZSimpleAgent 节点的通用 markdown system prompts
 nodes/
   __init__.py                # re-exports the node classes
+  _partition_common.py      # _PARTITION_CACHE + locked noise handoff helpers (shared by ZImageTurboProgressive + ZImageUpscalePlus)
+  _sigma_presets.py          # _SIGMA_PRESETS_BY_NAME + _get_sigma_preset (Z-Image Turbo alpha/bravo preset 集合)
+  _sample_common.py          # _stage_sample_with_sigmas + _stage_seed (sample helper, 共用 v2 改后)
+  _noise_inverse.py          # Karras-EDM noise inversion (stage 间桥接)
   _save_common.py            # shared helpers (counter scan, metadata)
   _agent_common.py           # agent helpers (_scan_system_prompts / _resolve_system)
   random_number_plus.py      # RandomNumberPlus
@@ -39,6 +43,7 @@ nodes/
   save_text_plus.py          # SaveTextPlus
   save_video_plus.py         # SaveVideoPlus
   zimage_turbo_progressive.py # ZImageTurboProgressive
+  z_image_upscale_plus.py    # ZImageUpscalePlus (shares _partition_common / _sample_common / _sigma_presets / _noise_inverse)
   ltx_video_turbo_progressive.py # ZLTXVideoTurboProgressive
   prompt_enhance_plus.py     # PromptEnhancePlus
 tests/
@@ -61,6 +66,7 @@ Classic V1-style: 5 entries in `NODE_CLASS_MAPPINGS` + display names. Menu: `ZSi
 | `SaveImagePlus` | `ZSimple-Nodes/image` | Save IMAGE to PNG/JPEG/WebP/JXL with per-format quality + metadata strategy + counter continuation. Outputs `images` / `paths` / `filename_first` / `workflow_json`. |
 | `SaveTextPlus` | `ZSimple-Nodes/text` | Save STRING to `.txt`/`.md`/`.json`/`.csv`; outputs `path` / `byte_count` / `workflow_json`. Fixed filename `<prefix>_00001.<ext>` (no counter continuation). |
 | `ZImageTurboProgressive` | `ZSimple-Nodes/sampling` | 3-stage progressive sampling for Z-Image Turbo. Hardcoded BRAVO/ALPHA sigma presets; `latent_scaling` size chain (fast/quality/none); `intensity` (V2 Adv formula); `creativity_mode` stage2 scramble; per-stage sampler. |
+| `ZImageUpscalePlus` | `ZSimple-Nodes/image` | Progressive upscale + final-stage refinement for existing latent using Z-Image Turbo. v2: BRAVO/ALPHA sigma preset selection (`_SIGMA_PRESETS_BY_NAME`, `alpha_3..alpha_10` + `bravo_8`); tiled `upscale_model` integration (requires `vae` input, VAE round-trip + tiled scale with OOM retry); partial denoise final refinement (`denoise` param + `force_full_denoise=False`); per-stage sampling via `_sample_common._stage_sample_with_sigmas`; Karras-EDM `noise_inverse` between stages; shares `_partition_common` locked noise handoff with `ZImageTurboProgressive`. v3: optional `positive?` / `negative?` CONDITIONING inputs (cfg=1.0 keeps them no-op but exposes the hook); `sampler_name` propagated through `_stage_sample_with_sigmas` so DISCARD_PENULTIMATE_SIGMA_SAMPLERS optimization is reachable. `ZImageTurboProgressive._stage_denoise` mirrors the same `sampler_name` pass-through. Inputs: `latent_input` / `model` / `vae?` / `upscale_model?` / `upscale_factor` (1.0-24.0) / `max_step_scale` / `sigma_preset` / `tail_steps_first_upscale` / `tail_steps_last_upscale` / `refinement_model?` / `sampler?` / `scheduler?` / `denoise?` (0.0-1.0) / `positive?` / `negative?` / `seed`. Output: `latent`. |
 | `ZLTXVideoTurboProgressive` | `ZSimple-Nodes/sampling` | LTX2.5 AV latent sampler driven by an N-stage `sigmas_pipe`. 14 inputs (`model` / `guider` / `av_latent` / `sampler_obj` / `sigmas_pipe` multiline / `upscale_modes` / `vae_video` / `upscale_model` / `guidance_rescale` / `enforce_per_frame_path` / `enable_stg` / `enable_modality_guidance` / `stg_blocks` / `modality_scale` / `seed`), 1 output (`latent` NestedTensor). Each sigmas_pipe line = one stage's σ schedule; previous stage output is re-noised (by sampler) and used as clean latent_image for the next. `upscale_modes` is a comma-separated list of `external` / `interpolate` / `vae_roundtrip` per inter-stage (stage 0 has no upscale). Per-stage optimizations: SD3 CFG rescale (`guidance_rescale>0`), per_frame_path validation (`enforce_per_frame_path`), STG bundle (`enable_stg`), Modality Guidance bundle (`enable_modality_guidance`). Karras EDM stochastic churn / SD3 resample / SDXL refiner pattern in one node. |
 
 ### Node Specifics

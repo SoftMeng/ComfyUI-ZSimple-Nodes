@@ -6,6 +6,7 @@ from .nodes.save_video_plus import SaveVideoPlus
 from .nodes.z_simple_anthropic_agent import ZSimpleAnthropicAgent
 from .nodes.z_simple_openai_agent import ZSimpleOpenAIAgent
 from .nodes.zimage_turbo_progressive import ZImageTurboProgressive
+from .nodes.z_image_upscale_plus import ZImageUpscalePlus
 from .nodes.ltx_video_turbo_progressive import ZLTXVideoTurboProgressive
 from .nodes.prompt_enhance_plus import PromptEnhancePlus
 from .nodes.train_gemma_qwen_adapter import TrainGemmaToQwenAdapter
@@ -16,6 +17,7 @@ NODE_CLASS_MAPPINGS = {
     "SaveTextPlus": SaveTextPlus,
     "SaveVideoPlus": SaveVideoPlus,
     "ZImageTurboProgressive": ZImageTurboProgressive,
+    "ZImageUpscalePlus": ZImageUpscalePlus,
     "ZSimpleAnthropicAgent": ZSimpleAnthropicAgent,
     "ZSimpleOpenAIAgent": ZSimpleOpenAIAgent,
     "ZLTXVideoTurboProgressive": ZLTXVideoTurboProgressive,
@@ -30,6 +32,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SaveTextPlus": "Save Text Plus",
     "SaveVideoPlus": "Save Video Plus",
     "ZImageTurboProgressive": "Z-Image Turbo Progressive",
+    "ZImageUpscalePlus": "Z-Image Upscale Plus",
     "ZSimpleAnthropicAgent": "ZSimple Anthropic Agent",
     "ZSimpleOpenAIAgent": "ZSimple OpenAI Agent",
     "ZLTXVideoTurboProgressive": "Z-LTX Video Turbo Progressive",
