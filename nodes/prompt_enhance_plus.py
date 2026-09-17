@@ -33,6 +33,7 @@ _TEMPLATE_FILES = {
     ("Krea-2-Edit", "I2V"): "krea2_edit_i2v",
     ("Phrase", "T2I"): "phrase_t2i",
     ("PhraseEN", "T2I"): "phrase_en",
+    ("Flux", "T2I"): "phrase_flux",
 }
 
 
