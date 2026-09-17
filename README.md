@@ -689,7 +689,7 @@ model 字段填对应端点支持的模型名即可。
 
 ### ✨ PromptEnhancePlus（菜单：`ZSimple-Nodes/text`）
 
-用本地轻量 LLM（Gemma 3/4、Qwen 3.5 等）把短 prompt 扩写成目标模型的训练 caption 风格。内置 7 个目标（5 个模型 + 2 个 `Phrase` 风格：中/英）的 system prompt，可外接自定义模板覆盖，支持 image / video / audio 多模态输入。
+用本地轻量 LLM（Gemma 3/4、Qwen 3.5 等）把短 prompt 扩写成目标模型的训练 caption 风格。内置 8 个目标（5 个模型 + 3 个 `Phrase` 风格：中/英/Flux）的 system prompt，可外接自定义模板覆盖，支持 image / video / audio 多模态输入。
 
 **典型用法**：短句"A cat walks" → 自动扩写成 LTX 2.5 训练风格的完整描述（含镜头、声音、动作时序），直接喂给 `LTXAddVideoICLoRAGuide` 或 `KSampler` 出片。
 
@@ -697,7 +697,7 @@ model 字段填对应端点支持的模型名即可。
 
 | 旋钮 | 它是干嘛的 |
 |---|---|
-| `target_model` | 目标模型（LTX2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit / **Phrase** / **PhraseEN**）—— 决定走哪套内置 system prompt；`Phrase` 输出中文逗号分隔短语串，`PhraseEN` 输出英文逗号分隔短语串（30-80 词），适配 SD / FLUX / Z-Image 等 T2I 模型 |
+| `target_model` | 目标模型（LTX2.5 / H3 / Z-Image / Krea-2 / Krea-2-Edit / **Phrase** / **PhraseEN** / **Flux**）—— 决定走哪套内置 system prompt；`Phrase` 中文逗号分隔、`PhraseEN` 英文逗号分隔、`Flux` Flux-tuned 英文短语串（含 camera view / render quality 等电影细节），均适配 SD / FLUX / Z-Image 等 T2I 模型 |
 | `mode` | `auto` = 按 image/video/audio 是否连接自动选 T2V/T2I/I2V；或强制指定 |
 | `custom_template` | 非空时优先于内置模板；用户粘贴自己的 system prompt |
 | `image` / `video` / `audio` | 可选多模态参考；连接 image/video 自动切 I2V，Krea-2-Edit 必须连接图 |
@@ -721,7 +721,7 @@ model 字段填对应端点支持的模型名即可。
 |---|---|---|---|
 | `clip` | CLIP | — | 本地 LLM（通过 ComfyUI `LoadCLIP` 加载 Gemma / Qwen 等） |
 | `prompt` | STRING | `""` | 用户短 prompt（multiline + dynamic_prompts） |
-| `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` / `Phrase` / `PhraseEN` |
+| `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` / `Phrase` / `PhraseEN` / `Flux` |
 | `mode` | COMBO | `auto` | `auto` / `T2V` / `T2I` / `I2V` |
 | `image` | IMAGE | opt | 首帧参考（I2V 模式自动启用） |
 | `video` | IMAGE | opt | 视频帧序列（24 FPS，1 FPS 内部采样） |
@@ -750,7 +750,7 @@ model 字段填对应端点支持的模型名即可。
 | 含 `qwen` | `<\|im_start\|>system...<\|im_end\|>` |
 | 未知 | 兜底 gemma3 格式 + 警告 |
 
-#### 7 个内置模板来源
+#### 8 个内置模板来源
 
 | 模型 | 模板风格 | 来源 |
 |---|---|---|
@@ -761,6 +761,7 @@ model 字段填对应端点支持的模型名即可。
 | Krea-2-Edit | 指令式 + 参考图描述 | 与 `Comfyui-QwenEditUtils` llama_template 风格一致 |
 | **Phrase** | 中文逗号分隔短语串 | 通用 T2I 风格；见 `model_system_prompt/phrase_t2i.md` |
 | **PhraseEN** | 英文逗号分隔短语串（无完整句子、无主谓结构） | 通用 T2I 风格（SD / FLUX / Z-Image）；见 `model_system_prompt/phrase_en.md` |
+| **Flux** | 英文逗号分隔短语串（带 camera view / render quality 等电影细节） | Flux-tuned T2I 风格；见 `model_system_prompt/phrase_flux.md` |
 
 #### 与 ZSimpleAgent 系列的区别
 
