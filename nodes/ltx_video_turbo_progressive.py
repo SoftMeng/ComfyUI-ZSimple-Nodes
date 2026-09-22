@@ -189,6 +189,18 @@ def _count_guide_frames(guider, video_shape) -> int:
     return 0
 
 
+def _sync_stream_devices(nt):
+    # LatentUpsampler leaves audio on cpu while video is cuda; pack_latents' torch.cat requires one device
+    if not getattr(nt, "is_nested", False):
+        return nt
+    parts = nt.unbind()
+    dev = parts[0].device
+    if all(p.device == dev for p in parts):
+        return nt
+    import comfy.nested_tensor
+    return comfy.nested_tensor.NestedTensor(tuple(p.to(dev) for p in parts))
+
+
 def _validate_av_samples(samples) -> tuple:
     """Validate NestedTensor with (video 5D, audio 4D). Returns (video, audio) or raises ValueError."""
     if not getattr(samples, "is_nested", False):
@@ -351,12 +363,11 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
                     f"(line {n_stages - 1} ends at {stages_sigmas[-1][-1]}). Intermediate lines may "
                     f"stop at sigma>0 for trajectory segmentation.")
         if n_stages >= 1:
-            if abs(stages_sigmas[0][0] - 1.0) > 1e-6:
-                return (f"[ZLTXVideoTurboProgressive] sigmas_pipe stage 0 must start at 1.0 (full noise), "
-                        f"got {stages_sigmas[0][0]}.")
-            for idx, s in enumerate(stages_sigmas[1:], start=1):
-                if s[0] > 1.0 + 1e-6 or s[0] < 0.0:
-                    return (f"[ZLTXVideoTurboProgressive] sigmas_pipe stage {idx} first sigma must be in [0, 1], "
+            # sigma < 1.0 on the first line = partial denoise (chained ZLTX nodes
+            # continuing from a prior node's output); only T2V needs 1.0.
+            for idx, s in enumerate(stages_sigmas, start=0):
+                if s[0] > 1.0 + 1e-6 or s[0] <= 0.0:
+                    return (f"[ZLTXVideoTurboProgressive] sigmas_pipe stage {idx} first sigma must be in (0, 1], "
                             f"got {s[0]}.")
 
         return True
@@ -389,6 +400,9 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
         _validate_av_samples(av_latent["samples"])
 
         current_latent = av_latent
+        current_latent = {**current_latent, "samples": _sync_stream_devices(current_latent["samples"])}
+        if current_latent.get("noise_mask") is not None:
+            current_latent["noise_mask"] = _sync_stream_devices(current_latent["noise_mask"])
         for i, (stage_sigmas, scale) in enumerate(zip(stages_sigmas, scale_chain)):
             if scale != 1.0:
                 current_latent = {**current_latent,
@@ -440,6 +454,13 @@ class ZLTXVideoTurboProgressive(io.ComfyNode):
             )
             callback = latent_preview.prepare_callback(patched_model, max(1, len(sigmas) - 1))
             denoise_mask = current_latent.get("noise_mask", None)
+            if denoise_mask is None:
+                # LTXBaseModel._process_input patchifies denoise_mask whenever
+                # keyframe_idxs.shape[2] > 0 (upstream LTXVAddGuide); a missing
+                # mask triggers patchify(None) AttributeError. Fall back to a
+                # 5D ones mask matching the video stream (full-sample grid).
+                video, _ = _validate_av_samples(current_latent["samples"])
+                denoise_mask = torch.ones_like(video)
             out = guider.sample(
                 noise=noise,
                 latent_image=latent_image,

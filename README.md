@@ -189,7 +189,7 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 | `extra_texts` | STRING | `""` | 可选追加文本，多行；存在则前置换行后追加 |
 | `filename_prefix` | STRING | `"ComfyUI"` | 文件名前缀 |
 | `subfolder_template` | STRING | `"%date:yyyy-MM-dd%"` | 子目录模板，同 SaveImagePlus |
-| `filename_number_padding` | INT (1-9) | 5 | 文件名计数零填充宽度（**实际不使用**，见下方警告）|
+| `filename_number_padding` | INT (1-9) | 5 | 文件名计数零填充宽度（5 → `_00001`）|
 | `format` | COMBO | `txt` | `txt` / `md` / `json` / `csv` |
 | `embed_json_keys` | COMBO (`none`/`pretty`) | `pretty` | 仅 `format=json` 时生效；`pretty` 对合法 JSON pretty-print；`none` 按原文写入 |
 
@@ -201,8 +201,9 @@ JXL `distance` 公式：`distance = max(0.0, (100 - quality) / 20.0)`。
 | `byte_count` | INT | 写入字节数 |
 | `workflow_json` | STRING | 自动从 `extra_pnginfo` 导出 API workflow JSON |
 
-> [!WARNING]
-> **文件名固定为 `<prefix>_00001.<ext>`，不会续接 counter**（与 SaveImagePlus 行为不同）。重复保存会**覆盖同名文件**——若需保留多份，请先切换 `filename_prefix`。
+#### Counter 续接（避免覆盖）
+
+每次 `execute()` 启动时扫描目标子目录，按 `<filename_prefix>_<NNNNN>.<ext>` 过滤已有文件，取最大编号 + 1 作为起始 counter；目录为空时仍从 `_00001` 起算。四种格式（`txt` / `md` / `json` / `csv`）各自独立计数，同一 prefix 切换格式互不串扰。同一工作流放多个 `SaveTextPlus`（同 prefix + 同 format）现在各自落到递增编号，不会覆盖。
 
 </details>
 

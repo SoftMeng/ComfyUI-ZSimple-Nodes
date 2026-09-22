@@ -7,7 +7,7 @@ from comfy_api.latest import io
 
 import folder_paths
 
-from ._save_common import resolve_subfolder, workflow_json_from_extra
+from ._save_common import resolve_subfolder, resume_counter, workflow_json_from_extra
 
 
 class SaveTextPlus(io.ComfyNode):
@@ -100,7 +100,8 @@ class SaveTextPlus(io.ComfyNode):
         os.makedirs(full_output_folder, exist_ok=True)
 
         pad = max(1, int(filename_number_padding))
-        file_name = f"{filename_prefix}_00001.{format}"
+        counter = resume_counter(full_output_folder, filename_prefix, format)
+        file_name = f"{filename_prefix}_{counter:0{pad}d}.{format}"
         full_save_path = os.path.join(full_output_folder, file_name)
 
         body = text + ("\n" + extra_texts if extra_texts else "")

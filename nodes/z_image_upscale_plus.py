@@ -15,7 +15,6 @@ import latent_preview
 from ._noise_inverse import _noise_inverse
 from ._partition_common import _locked_noise_from_prev
 from ._sample_common import _stage_sample_with_sigmas, _stage_seed
-from ._sigma_presets import _SIGMA_PRESETS_BY_NAME, _get_sigma_preset
 from .zimage_turbo_progressive import adjust_latent_size
 
 
@@ -32,18 +31,29 @@ def _cached_sampler(name: str):
     return s
 
 
-def _resolve_sigma_tuples(upscale_factor: float, max_step_scale: float,
-                          sigma_preset: str) -> list[tuple[float, ...]]:
-    if sigma_preset in _SIGMA_PRESETS_BY_NAME:
-        s1_tuple, s2_tuple, s3_tuple = _SIGMA_PRESETS_BY_NAME[sigma_preset]
-    else:
-        s1_tuple, s2_tuple, s3_tuple = _get_sigma_preset(8, "middle")
-    scales = []
-    s = 1.0
-    while s < upscale_factor - 1e-6:
-        s = min(s * max_step_scale, upscale_factor)
-        scales.append(s)
-    return [s1_tuple] + [s2_tuple] * (len(scales) - 1)
+def _get_sigma_schedule(model, sampler_name, scheduler, steps):
+    model_sampling = model.get_model_object("model_sampling")
+    discard = sampler_name in comfy.samplers.KSampler.DISCARD_PENULTIMATE_SIGMA_SAMPLERS
+    sigmas = comfy.samplers.calculate_sigmas(model_sampling, scheduler, steps + (1 if discard else 0))
+    if discard:
+        sigmas = torch.cat([sigmas[:-2], sigmas[-1:]])
+    return sigmas
+
+
+def _slice_sigmas_at_entry(sigmas, enter_sigma):
+    if sigmas is None or len(sigmas) < 2:
+        return sigmas
+    for i in range(len(sigmas) - 1):
+        if sigmas[i].item() <= enter_sigma:
+            return sigmas[i:]
+    return sigmas
+
+
+def _stage_enter_sigma(i, n_stages, base_sigma=0.5, final_sigma=0.2):
+    if n_stages <= 1:
+        return base_sigma
+    t = i / (n_stages - 1)
+    return base_sigma + (final_sigma - base_sigma) * t
 
 
 def _upscale_image_with_model(img_bhwc, upscale_model, target_h, target_w, device):
@@ -82,7 +92,7 @@ class ZImageUpscalePlus(io.ComfyNode):
             node_id="ZImageUpscalePlus",
             display_name="Z-Image Upscale Plus",
             category="ZSimple-Nodes/image",
-            description="Z-Image Turbo 渐进放大 + 末级精修（v2）。支持 BRAVO/ALPHA sigma preset 选择、tiled upscale_model 接通、partial denoise 末级精修。",
+            description="Z-Image Turbo 渐进放大 + 末级精修（v2）。tiled upscale_model 接通、refine_enter_sigma 末级精修。",
             inputs=[
                 io.Latent.Input("latent_input"),
                 io.Model.Input("model"),
@@ -92,8 +102,6 @@ class ZImageUpscalePlus(io.ComfyNode):
                                      tooltip="像素 upscale 模型（RealESRGAN 等）。需 vae 同时连接。"),
                 io.Float.Input("upscale_factor", default=6.0, min=1.0, max=24.0, step=0.25),
                 io.Float.Input("max_step_scale", default=1.6, min=1.1, max=6.0, step=0.05),
-                io.Combo.Input("sigma_preset", options=list(_SIGMA_PRESETS_BY_NAME.keys()), default="alpha_8",
-                               tooltip="Z-Image Turbo 蒸馏 sigma preset。每 stage 起点对应 sigma。"),
                 io.Int.Input("tail_steps_first_upscale", default=6, min=1, max=12,
                              tooltip="非末级 stage 采样步数。"),
                 io.Int.Input("tail_steps_last_upscale", default=3, min=1, max=12,
@@ -101,9 +109,8 @@ class ZImageUpscalePlus(io.ComfyNode):
                 io.Model.Input("refinement_model", optional=True,
                                 tooltip="末级精修 model。默认走 `model` 参数。"),
                 io.Combo.Input("sampler", optional=True, default="euler", options=SAMPLER_NAMES),
-                io.Combo.Input("scheduler", optional=True, default="normal"),
-                io.Float.Input("denoise", optional=True, default=0.6, min=0.0, max=1.0, step=0.01,
-                               tooltip="末级精修 denoise。1.0 = full schedule；0.6 = 保留 40% 内容。"),
+                io.Float.Input("refine_enter_sigma", optional=True, default=0.4, min=0.05, max=2.0, step=0.05,
+                               tooltip="末级精修 σ 起点。0.4-0.8 = 强细化（stronger corrections），< 0.3 = 微调。"),
                 io.Float.Input("cfg", optional=True, default=1.0, min=1.0, max=20.0, step=0.1,
                                tooltip="Classifier-free guidance scale。Z-Image Turbo 推荐 1.0；提高此值并连 positive/negative 可让 prompt 影响 upscale。"),
                 io.Conditioning.Input("positive", optional=True,
@@ -120,15 +127,13 @@ class ZImageUpscalePlus(io.ComfyNode):
     @classmethod
     def execute(cls, latent_input, model, vae=None, upscale_model=None,
                 upscale_factor=6.0, max_step_scale=1.6,
-                sigma_preset="alpha_8",
                 tail_steps_first_upscale=6, tail_steps_last_upscale=3,
-                refinement_model=None, sampler="euler", scheduler="normal",
-                denoise=0.6, cfg=1.0, seed=0, positive=None, negative=None) -> io.NodeOutput:
+                refinement_model=None, sampler="euler", refine_enter_sigma=0.4,
+                cfg=1.0, seed=0, positive=None, negative=None) -> io.NodeOutput:
         # TODO thread-safety: _PARTITION_CACHE shared with zimage_turbo_progressive
         samples_in = latent_input["samples"]
         B, C, H, W = samples_in.shape
         dtype = samples_in.dtype
-        device = comfy.model_management.get_torch_device()
 
         target_h = max(8, round(H * upscale_factor / 8) * 8)
         target_w = max(8, round(W * upscale_factor / 8) * 8)
@@ -137,22 +142,21 @@ class ZImageUpscalePlus(io.ComfyNode):
         sampler_obj = _cached_sampler(sampler)
         positive = positive or []
         negative = negative or []
+        cfg = max(1.0, min(cfg, 1.5))
 
-        sigma_tuples = _resolve_sigma_tuples(
-            upscale_factor, max_step_scale, sigma_preset,
-        )
+        scales = _progressive_scales_for_factor(upscale_factor, max_step_scale)
+        n_stages = len(scales)
 
         current_samples = samples_in
         gen = torch.Generator().manual_seed(seed)
         current_eps = torch.randn(samples_in.shape, generator=gen, dtype=dtype)
 
-        for i, scale in enumerate(_progressive_scales_for_factor(upscale_factor, max_step_scale)):
+        for i, scale in enumerate(scales):
             if upscale_factor > 1.0 + 1e-6:
                 if scale <= 1.0 + 1e-6:
                     continue
 
-                target_sigma = sigma_tuples[i + 1] if i + 1 < len(sigma_tuples) else sigma_tuples[-1]
-                enter_sigma = target_sigma[0]
+                enter_sigma = _stage_enter_sigma(i, n_stages)
                 new_h = max(8, round(H * scale / 8) * 8)
                 new_w = max(8, round(W * scale / 8) * 8)
 
@@ -169,13 +173,20 @@ class ZImageUpscalePlus(io.ComfyNode):
                 current_eps = _locked_noise_from_prev(current_eps, (B, C, new_h, new_w),
                                                    _stage_seed(seed, i))
 
+                current_samples = _noise_inverse(
+                    model, current_samples, enter_sigma, _stage_seed(seed, i)
+                )
+
+                full_sigmas = _get_sigma_schedule(model, sampler, "normal", tail_steps_first_upscale)
+                target_sigmas = _slice_sigmas_at_entry(full_sigmas, enter_sigma)
+
                 current_samples = _stage_sample_with_sigmas(
                     model=model,
                     latent_image=current_samples,
                     noise=current_eps,
                     cfg=1.0,
                     sampler_obj=sampler_obj,
-                    sigmas=target_sigma,
+                    sigmas=target_sigmas,
                     callback=None,
                     seed=_stage_seed(seed, i),
                     force_full_denoise=True,
@@ -184,13 +195,20 @@ class ZImageUpscalePlus(io.ComfyNode):
                     sampler_name=sampler,
                 )
 
+        refine_full = _get_sigma_schedule(refinement_model_obj, sampler, "normal", tail_steps_last_upscale)
+        refine_sigmas = _slice_sigmas_at_entry(refine_full, refine_enter_sigma)
+
+        current_samples = _noise_inverse(
+            refinement_model_obj, current_samples, refine_enter_sigma, _stage_seed(seed, 0, is_refinement=True) + 1
+        )
+
         current_samples = _stage_sample_with_sigmas(
             model=refinement_model_obj,
             latent_image=current_samples,
             noise=current_eps,
             cfg=1.0,
             sampler_obj=sampler_obj,
-            sigmas=sigma_tuples[-1] if sigma_tuples else (1.0, 0.0),
+            sigmas=refine_sigmas,
             callback=None,
             seed=_stage_seed(seed, 0, is_refinement=True),
             force_full_denoise=False,

@@ -94,7 +94,7 @@ class SaveImagePlus(io.ComfyNode):
 
     @staticmethod
     def _build_png_metadata(
-        cls, embed_mode: str, prompt, extra_pnginfo
+        embed_mode: str, prompt, extra_pnginfo
     ) -> PngInfo | None:
         if embed_mode == "none":
             return None
@@ -106,9 +106,9 @@ class SaveImagePlus(io.ComfyNode):
                 metadata.add_text(key, json.dumps(extra_pnginfo[key]))
         return metadata
 
-    @classmethod
+    @staticmethod
     def _build_jpeg_exif(
-        cls, embed_mode: str, prompt, extra_pnginfo
+        embed_mode: str, prompt, extra_pnginfo
     ) -> bytes | None:
         if embed_mode == "none" or prompt is None:
             return None
@@ -161,6 +161,8 @@ class SaveImagePlus(io.ComfyNode):
                 255.0 * image_tensor.cpu().numpy(), 0, 255
             ).astype(np.uint8)
             pil_image = Image.fromarray(array)
+            if format == "jpeg" and pil_image.mode == "RGBA":
+                pil_image = pil_image.convert("RGB")
 
             file_name = f"{filename_prefix}_{counter:0{pad}d}.{format}"
 
@@ -170,7 +172,7 @@ class SaveImagePlus(io.ComfyNode):
                 pil_image.save(
                     full_save_path,
                     "PNG",
-                    pnginfo=cls._build_png_metadata(
+                    pnginfo=SaveImagePlus._build_png_metadata(
                         embed_metadata, prompt, extra_pnginfo
                     ),
                     compress_level=png_compress_level,
@@ -180,7 +182,7 @@ class SaveImagePlus(io.ComfyNode):
                     "quality": quality,
                     "subsampling": jpeg_subsampling,
                 }
-                exif_bytes = cls._build_jpeg_exif(
+                exif_bytes = SaveImagePlus._build_jpeg_exif(
                     embed_metadata, prompt, extra_pnginfo
                 )
                 if exif_bytes:
