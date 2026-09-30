@@ -44,3 +44,32 @@ def _stage_sample_with_sigmas(
 
 def _stage_seed(base_seed: int, stage_idx: int, *, is_refinement: bool = False) -> int:
     return base_seed + 9999 if is_refinement else base_seed + stage_idx + 1
+
+
+def _parse_multiline_sigmas(text: str) -> list[list[float]]:
+    result: list[list[float]] = []
+    for line in text.strip().splitlines():
+        line = line.strip().strip("[]")
+        if not line:
+            continue
+        sigmas = [float(x.strip()) for x in line.split(",") if x.strip()]
+        result.append(sigmas)
+    if not result:
+        raise ValueError("sigmas_pipe is empty (no valid lines)")
+    return result
+
+
+def _validate_multiline_sigmas(stages: list[list[float]], *, require_last_end_zero: bool = True) -> None:
+    for idx, sigmas in enumerate(stages):
+        if len(sigmas) < 2:
+            raise ValueError(f"stage {idx} schedule must have >=2 sigmas, got {len(sigmas)}")
+        for i in range(1, len(sigmas)):
+            if sigmas[i] > sigmas[i - 1] + 1e-6:
+                raise ValueError(
+                    f"stage {idx} sigmas must be monotonically non-increasing: "
+                    f"{sigmas[i-1]} -> {sigmas[i]} at index {i}"
+                )
+        if sigmas[0] <= 0.0 or sigmas[0] > 1.0 + 1e-6:
+            raise ValueError(f"stage {idx} first sigma must be in (0, 1], got {sigmas[0]}")
+    if require_last_end_zero and stages[-1][-1] != 0.0:
+        raise ValueError(f"last stage must end at sigma 0.0, got {stages[-1][-1]}")

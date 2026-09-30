@@ -429,6 +429,76 @@ Z-Image Turbo 的**一键三段采样**：先生成草图（低分辨率快速�
 
 ---
 
+### 🎛️ ZAdvancedProgressiveSampler（菜单：`ZSimple-Nodes/sampling`）
+
+通用 3 阶段 progressive 采样器。每阶段独立填写 σ 序列 + 独立 latent 缩放 + 独立采样器；**总步数由 σ 列表长度决定**，不需要 `steps` 输入。和 `ZImageTurboProgressive` 的差异：去掉 `_SIGMA_PRESETS_BY_NAME` 内置 sigma，把控制权完全交给用户（适合 flow matching / 自定义蒸馏 schedule）。
+
+**典型用法**：把任意 N 段 σ 列表贴进 `sigmas_pipe`（每行一段），设好三档 latent 缩放（建议 `(0.5, 0.75, 1.0)`），挂上 model + positive 即可跑。
+
+#### 关键旋钮
+
+| 旋钮 | 它是干嘛的 |
+|---|---|
+| `sigmas_pipe` | 3 行 = 3 阶段 σ 序列（逗号分隔浮点）；首 σ ∈ (0, 1]；最后一行末 σ 必须 0.0；中间行可停在 σ>0（trajectory segmentation）|
+| `stage1_scale` / `stage2_scale` / `stage3_scale` | 三阶段 latent 缩放（相对输入 H/W）；末 stage 尺寸由 stage3_scale 决定（默认 1.0 = 与 input 等价）|
+| `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | 每阶段采样器（`comfy.samplers.SAMPLER_NAMES` 全集）|
+| `stage_handoff` | `off` = 阶段间直接传；`legacy` = 用 Karras-EDM `noise_inverse` 桥接 |
+| `cfg` | CFG；distilled 模型推荐 1.0 |
+| `seed` | stage1 = `seed + 1`；stage2 = `seed + 2`；stage3 = `seed + 3` |
+
+<details>
+<summary>📋 完整参数与输出参考（点击展开）</summary>
+
+#### 输入
+
+| 名称 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `latent_input` | LATENT | — | 起始 latent（force_input）|
+| `model` | MODEL | — | 主模型（force_input）|
+| `positive` | CONDITIONING | — | 三阶段共用（force_input）|
+| `sigmas_pipe` | STRING (multiline) | `(3 行 distilled_default)` | 每行 = 一阶段 σ 调度；解析共享自 `_sample_common._parse_multiline_sigmas` |
+| `stage1_scale` / `stage2_scale` / `stage3_scale` | FLOAT (0.1–2.0) | 0.5 / 0.75 / 1.0 | 每阶段 latent 工作尺寸（相对于输入 H/W；1.0 = input size）|
+| `stage1_sampler` / `stage2_sampler` / `stage3_sampler` | COMBO | euler / euler / euler | 每阶段采样器 |
+| `stage_handoff` | COMBO (`off`/`legacy`) | legacy | `legacy` 在 scale 变化时走 `_noise_inverse(prev, sigma_target=stages[i+1][0])` 桥接（Karras-EDM stochastic churn）|
+| `cfg` | FLOAT (1.0–20.0) | 1.0 | Distilled 模型 1.0；>1.0 时启用 negative 路径 |
+| `seed` | INT | 0 | 见上 |
+
+#### 输出
+
+| 名称 | 类型 | 说明 |
+|---|---|---|
+| `latent` | LATENT | 末 stage 干净 latent（尺寸由 stage3_scale 决定；默认 1.0 = input 等价，可下游 VAE Decode）|
+| `debug_stage1_latent` | LATENT | stage1 sample 后干净 latent；接 VAE Decode + Save Image 调试用 |
+| `debug_stage2_latent` | LATENT | stage2 sample 后干净 latent；接 VAE Decode + Save Image 调试用 |
+
+#### sigmas_pipe 多阶段
+
+每行 = 一个阶段 σ schedule。前一阶段输出按 `stage_handoff` 选择接力方式，再交给下一阶段的 sampler。
+
+**每行首 σ 规则**：必须 ∈ (0, 1]。
+- `1.0` = 从全噪声开始（纯 T2I / 多阶段细化）
+- `<1.0` = V2I 去噪强度：源 latent 按 `x = latent × (1-σ₀) + noise × σ₀` 混合
+
+**每行末 σ 规则**：仅**最后一行**必须以 `0.0` 结尾；中间行可停在 σ > 0 做**轨迹分段**。
+
+**Auto trajectory segmentation**：节点自动让 stage i 的起点 σ 不低于 stage i-1 的终点 σ——若用户填的起点 σ 比 stage i-1 终点 σ 低，silent prepend 一行 prev_end_sigma。stage i 起 σ ≥ prev_end_sigma 的 pattern（img2img / partial denoise / trajectory segmentation）合法保留。这样默认 `sigmas_pipe`（3 行首 σ 都为 1.0）下，每阶段自动 prepend 上一阶段的末 σ，保留前 stage 去噪信号。
+
+例：默认 sigmas_pipe 在 stage1=0.5/stage2=1.0/stage3=1.0 下，stage2 实际 σ 序列为 `[0.0, 1.0, 0.96, ..., 0.0]`（12 步），而非 `[1.0, 0.96, ..., 0.0]`（重新从全噪开始）。
+例：用户填 stage2 起 σ=0.48（img2img 模式：stage1 完全去噪 → stage2 加噪到 σ=0.48 再采样）→ 节点直接采用 `[0.48, 0.0]`；sampler 内部按起 σ 重 scale noise。
+
+#### 异常
+
+- 行数 != 3 → `ValueError`
+- 某行长度 < 2 → `ValueError`
+- 某行非单调 → `ValueError`
+- 某行首 σ ∉ (0, 1] → `ValueError`
+- 最后一行末 σ != 0.0 → `ValueError`
+- `latent_input` 通道数与 `model.latent_format.latent_channels` 不匹配 → `RuntimeError`（如 Qwen-Image 2.1 需 64 通道 latent，普通 SDXL/Flux 需 4 通道；上游 Empty Latent 节点选错时触发。`EmptyQwenImageLayeredLatentImage` 16-ch 5D 是 Qwen-Image-Layered 用，不是 Qwen-Image 2.1）
+
+</details>
+
+---
+
 ### 🎞️ ZLTXVideoTurboProgressive（菜单：`ZSimple-Nodes/sampling`）
 
 LTX2.5 视频单阶段采样节点。接收一个预构建的 `Guider` 和 AV latent，按预设 sigma 调度跑采样。

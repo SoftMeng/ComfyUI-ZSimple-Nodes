@@ -10,6 +10,7 @@ from .nodes.z_image_upscale_plus import ZImageUpscalePlus
 from .nodes.ltx_video_turbo_progressive import ZLTXVideoTurboProgressive
 from .nodes.prompt_enhance_plus import PromptEnhancePlus
 from .nodes.train_gemma_qwen_adapter import TrainGemmaToQwenAdapter
+from .nodes.z_advanced_progressive_sampler import ZAdvancedProgressiveSampler
 
 NODE_CLASS_MAPPINGS = {
     "RandomNumberPlus": RandomNumberPlus,
@@ -24,6 +25,7 @@ NODE_CLASS_MAPPINGS = {
     "PromptEnhancePlus": PromptEnhancePlus,
     "TrainGemmaToQwenAdapter": TrainGemmaToQwenAdapter,
     "GemmaToQwenAdapterApply": GemmaToQwenAdapterApply,
+    "ZAdvancedProgressiveSampler": ZAdvancedProgressiveSampler,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -39,6 +41,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PromptEnhancePlus": "Prompt Enhance Plus",
     "TrainGemmaToQwenAdapter": "Train Gemma→Qwen Adapter (Z-Image)",
     "GemmaToQwenAdapterApply": "Apply Gemma→Qwen Adapter (Z-Image)",
+    "ZAdvancedProgressiveSampler": "Z-Image Advanced Progressive Sampler",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

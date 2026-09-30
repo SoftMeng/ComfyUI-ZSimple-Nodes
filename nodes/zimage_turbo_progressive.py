@@ -487,7 +487,8 @@ class ZImageTurboProgressive(io.ComfyNode):
         def _to_tensor(tup):
             if not tup:
                 return None
-            return torch.tensor(list(tup), dtype=torch.float32, device=model.load_device)
+            return torch.tensor(list(tup), dtype=torch.float32,
+                                device=comfy.model_management.get_torch_device())
 
         sigmas1 = _to_tensor(sigmas1_tuple)
         sigmas2 = _to_tensor(sigmas2_tuple)

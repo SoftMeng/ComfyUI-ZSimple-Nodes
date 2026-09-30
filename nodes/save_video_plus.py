@@ -1,12 +1,20 @@
-"""Save Video Plus — encode IMAGE frames to mp4 / webm / gif."""
+"""Save Video Plus — encode IMAGE / VIDEO to mp4 / webm / gif.
+
+VIDEO input extracts frames via get_components(); for mp4/webm the
+input video's audio (if present) is muxed via ffmpeg second pass.
+"""
 
 import json
 import os
+import subprocess
+import tempfile
+import wave
 
+import imageio_ffmpeg
 import numpy as np
 from PIL import Image
 
-from comfy_api.latest import io
+from comfy_api.latest import io, ui
 
 import folder_paths
 
@@ -125,6 +133,54 @@ def _encode_gif(frames, path, fps, loop_count):
     )
 
 
+def _mux_audio_into_video(video_path: str, audio_dict: dict, container: str) -> None:
+    if not audio_dict or audio_dict.get("waveform") is None:
+        return
+    waveform = audio_dict["waveform"][0]
+    sample_rate = int(audio_dict["sample_rate"])
+    audio_np = (waveform.cpu().numpy() * 32767).clip(-32768, 32767).astype(np.int16)
+    if audio_np.ndim == 1:
+        audio_np = audio_np[None]
+    audio_np = audio_np.T
+
+    wav_fd, wav_path = tempfile.mkstemp(suffix=".wav")
+    os.close(wav_fd)
+    try:
+        with wave.open(wav_path, "wb") as wf:
+            wf.setnchannels(audio_np.shape[1])
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(audio_np.tobytes())
+
+        tmp_fd, tmp_video = tempfile.mkstemp(suffix=f".{container}")
+        os.close(tmp_fd)
+        try:
+            try:
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception as exc:
+                print(f"[SaveVideoPlus] ffmpeg not found, audio skipped: {exc}")
+                return
+            cmd = [
+                ffmpeg, "-y", "-loglevel", "error",
+                "-i", video_path, "-i", wav_path,
+                "-c:v", "copy",
+                "-c:a", "aac" if container == "mp4" else "libopus",
+                "-b:a", "192k", "-shortest",
+                tmp_video,
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"[SaveVideoPlus] audio mux failed, video kept without audio: {r.stderr}")
+                return
+            os.replace(tmp_video, video_path)
+        finally:
+            if os.path.exists(tmp_video):
+                os.remove(tmp_video)
+    finally:
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+
+
 class SaveVideoPlus(io.ComfyNode):
     OUTPUT_NODE = True
 
@@ -134,9 +190,11 @@ class SaveVideoPlus(io.ComfyNode):
             node_id="SaveVideoPlus",
             display_name="Save Video Plus",
             category="ZSimple-Nodes/video",
+            description="VIDEO input extracts frames via get_components(); audio (if present) is muxed for mp4/webm, dropped for gif.",
             search_aliases=["save", "save video", "export", "mp4", "webm", "gif"],
             inputs=[
-                io.Image.Input("images"),
+                io.Image.Input("images", optional=True),
+                io.Video.Input("video", optional=True),
                 io.Combo.Input("format", options=["mp4", "webm", "gif"], default="mp4"),
                 io.Float.Input(
                     "frame_rate",
@@ -192,19 +250,29 @@ class SaveVideoPlus(io.ComfyNode):
     @classmethod
     def execute(
         cls,
-        images,
-        format,
-        frame_rate,
-        filename_prefix,
-        subfolder_template,
-        filename_number_padding,
-        quality,
-        loop_count,
-        pingpong,
-        embed_metadata,
+        images=None,
+        format="mp4",
+        frame_rate=24.0,
+        filename_prefix="ZSimple",
+        subfolder_template="%date:yyyy-MM-dd%",
+        filename_number_padding=5,
+        quality=90,
+        loop_count=0,
+        pingpong="off",
+        embed_metadata="all",
         prompt=None,
         extra_pnginfo=None,
+        video=None,
     ):
+        if video is not None:
+            comps = video.get_components()
+            images = comps.images
+            frame_rate = float(comps.frame_rate)
+        elif images:
+            pass
+        else:
+            raise RuntimeError("SaveVideoPlus: 必须连接 images 或 video 之一")
+
         if len(images) == 0:
             raise RuntimeError("images 为空，无法编码视频")
 
@@ -237,17 +305,17 @@ class SaveVideoPlus(io.ComfyNode):
             raise RuntimeError(f"不支持的视频格式: {format}")
 
         relative_path = f"{subfolder}/{file_name}" if subfolder else file_name
-        preview = {
-            "filename": file_name,
-            "subfolder": subfolder,
-            "type": "output",
-            "frame_rate": frame_rate,
-        }
+        if video is not None and comps.audio is not None:
+            if format in ("mp4", "webm"):
+                _mux_audio_into_video(full_save_path, comps.audio, format)
+            elif format == "gif":
+                print("[SaveVideoPlus] GIF does not support audio; audio dropped.")
+
         return io.NodeOutput(
             images,
             relative_path,
             file_name,
             len(frames),
             workflow_json_from_extra(extra_pnginfo),
-            ui={"gifs": [preview]},
+            ui=ui.PreviewVideo([ui.SavedResult(file_name, subfolder, io.FolderType.output)]),
         )

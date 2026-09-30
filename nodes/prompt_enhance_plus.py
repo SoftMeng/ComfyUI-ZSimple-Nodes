@@ -28,6 +28,7 @@ _TEMPLATE_FILES = {
     ("LTX2.5", "I2V"): "ltx25_i2v",
     ("H3", "T2V"): "h3_t2v",
     ("H3", "I2V"): "h3_i2v",
+    ("H3-AD", "I2V"): "h3_ad",
     ("Z-Image", "T2I"): "zimage_t2i",
     ("Krea-2", "T2I"): "krea2_t2i",
     ("Krea-2-Edit", "I2V"): "krea2_edit_i2v",
