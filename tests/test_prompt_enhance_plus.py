@@ -788,6 +788,145 @@ def test_execute_text_only_clip_no_image_is_fine():
     assert out is not None
 
 
+# ---------------------------------------------------------------------------
+# Multi-image input (B,H,W,C batch tensor)
+# ---------------------------------------------------------------------------
+
+class _FakeImageBatch:
+    """Minimal stand-in for a torch.Tensor: just .shape and identity."""
+    def __init__(self, batch_size):
+        self.shape = (batch_size, 64, 64, 3)
+
+
+def test_format_chat_gemma4_multi_image_emits_3_per_image():
+    """gemma4 N 张图 = N×3 个 <|image|> 占位符 (gemma4.py:1530-1540)."""
+    out_3 = _format_chat("SYS", "u", _FakeImageBatch(3), "gemma4", images_count=3)
+    assert out_3.count("<|image><|image|><image|>") == 3
+    out_5 = _format_chat("SYS", "u", _FakeImageBatch(5), "gemma4", images_count=5)
+    assert out_5.count("<|image><|image|><image|>") == 5
+
+
+def test_format_chat_gemma4_zero_images_emits_no_placeholder():
+    """gemma4 + 0 图：不应有任何 image 占位符。"""
+    out = _format_chat("SYS", "u", None, "gemma4", images_count=0)
+    assert "<|image><|image|><image|>" not in out
+
+
+def test_format_chat_qwen_ignores_images_count():
+    """qwen 路径不写 image 占位符——依赖 tokenizer 自动注入。"""
+    for n in (1, 3, 5):
+        out = _format_chat("SYS", "u", _FakeImageBatch(n), "qwen", images_count=n)
+        assert "<|image>" not in out, f"qwen + {n} images still emits <|image|>"
+        assert "<|vision_start|>" not in out
+
+
+def test_auto_mode_i2v_when_images_batch_connected():
+    """多图 (images batch) 同样触发 auto → I2V。"""
+    assert _resolve_mode(
+        "auto", image=None, video=None, target_model="LTX2.5",
+        images=_FakeImageBatch(3),
+    ) == "I2V"
+    assert _resolve_mode(
+        "auto", image=None, video=None, target_model="Z-Image",
+        images=_FakeImageBatch(2),
+    ) == "T2I"
+
+
+def test_execute_passes_images_batch_to_tokenize():
+    """execute 必须把 multi-image batch tensor 透传给 clip.tokenize (qwen3vl.py:164-165 会自己 split)."""
+    clip = _FakeCLIP(name="qwen2.5-vl-3b", response="ok")
+    batch = _FakeImageBatch(3)
+    PromptEnhancePlus.execute(
+        clip,
+        prompt="multi-image test",
+        target_model="LTX2.5",
+        mode="I2V",
+        max_length=64,
+        temperature=0.7,
+        top_k=64,
+        top_p=0.95,
+        seed=0,
+        images=batch,
+    )
+    assert clip.last_tokenize_kwargs["image"] is batch
+
+
+def test_execute_images_takes_precedence_over_image():
+    """当 `images` 与 `image` 同时连接, `images` 优先."""
+    clip = _FakeCLIP(name="qwen2.5-vl-3b", response="ok")
+    single = "single-tensor"
+    batch = _FakeImageBatch(2)
+    PromptEnhancePlus.execute(
+        clip,
+        prompt="both connected",
+        target_model="LTX2.5",
+        mode="I2V",
+        max_length=64,
+        temperature=0.7,
+        top_k=64,
+        top_p=0.95,
+        seed=0,
+        image=single,
+        images=batch,
+    )
+    assert clip.last_tokenize_kwargs["image"] is batch
+
+
+def test_node_schema_exposes_images_input():
+    schema = PromptEnhancePlus.define_schema()
+    input_names = {i.name for i in schema.inputs}
+    assert "images" in input_names
+
+
+def test_execute_raises_for_text_only_clip_with_images_batch():
+    """文本-only CLIP 收到 multi-image batch tensor 同样要 raise."""
+    clip = _ZImageTEModelStub(name="qwen_3_4b.safetensors", response="ok")
+    try:
+        PromptEnhancePlus.execute(
+            clip,
+            prompt="a cat",
+            target_model="Z-Image",
+            mode="T2I",
+            max_length=64,
+            temperature=0.7,
+            top_k=64,
+            top_p=0.95,
+            seed=0,
+            images=_FakeImageBatch(3),
+        )
+    except ValueError as exc:
+        msg = str(exc)
+        assert "text-only" in msg.lower()
+        assert "image(s)" in msg.lower()
+        assert "ZImageTEModel_" in msg
+    else:
+        raise AssertionError("expected ValueError but execute returned without raising")
+
+
+def test_execute_gemma4_multi_image_emits_placeholders_in_text():
+    """execute 端到端: gemma4 + images batch (B=3) → formatted text 含 3 个 <|image><|image|><image|>.
+
+    覆盖 _format_chat 单测 (test_format_chat_gemma4_multi_image_emits_3_per_image)
+    之外的 execute 路径——验证 images_count 由 images.shape[0] 正确推导, 且 _format_chat
+    真的接到 images_count=3 而非默认 None."""
+    clip = _FakeCLIP(name="gemma4-text", response="ok")
+    batch = _FakeImageBatch(3)
+    PromptEnhancePlus.execute(
+        clip,
+        prompt="multi-image e2e",
+        target_model="LTX2.5",
+        mode="I2V",
+        max_length=64,
+        temperature=0.7,
+        top_k=64,
+        top_p=0.95,
+        seed=0,
+        images=batch,
+    )
+    sent_text = clip.last_tokenize_kwargs["tokens"]
+    assert sent_text.count("<|image><|image|><image|>") == 3
+
+
 if __name__ == "__main__":
     # Standalone runner — pytest can't import from this layout because root
     # __init__.py pulls in folder_paths which isn't installed in dev envs.

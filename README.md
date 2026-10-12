@@ -845,6 +845,7 @@ model 字段填对应端点支持的模型名即可。
 | `target_model` | COMBO | `LTX2.5` | `LTX2.5` / `H3` / `Z-Image` / `Krea-2` / `Krea-2-Edit` / `Phrase` / `PhraseEN` / `Flux` |
 | `mode` | COMBO | `auto` | `auto` / `T2V` / `T2I` / `I2V` |
 | `image` | IMAGE | opt | 首帧参考（I2V 模式自动启用） |
+| `images` | IMAGE | opt | 多图参考 batch (B,H,W,C)；调用模型原生多图识别。连接时优先于 `image` |
 | `video` | IMAGE | opt | 视频帧序列（24 FPS，1 FPS 内部采样） |
 | `audio` | AUDIO | opt | 音频上下文（仅 qwen 支持） |
 | `custom_template` | STRING | `""` | 外接 system prompt，覆盖内置 |

@@ -81,6 +81,7 @@ def _format_chat(
     video=None,
     audio=None,
     thinking=False,
+    images_count: int | None = None,
 ) -> str:
     """Format the system + user text for the local LLM.
 
@@ -106,19 +107,32 @@ def _format_chat(
     <start_of_turn>...<end_of_turn> format is harmless and we keep it.
 
     Image handling (per tokenizer family):
-    - gemma4 + image: hardcode <|image><|image|><image|> in the user
-      turn (mirrors ComfyUI's TextGenerateLTX2Prompt at
-      comfy_extras/nodes_textgen.py:242). gemma4's tokenize_with_weights
-      replaces the 3 placeholders (id=258880) with 1 image embed.
+    - gemma4 + image: hardcode 3 * images_count copies of
+      <|image><|image|><image|> in the user turn (mirrors ComfyUI's
+      TextGenerateLTX2Prompt at comfy_extras/nodes_textgen.py:242).
+      gemma4's _replace_placeholders (gemma4.py:1553-1565) replaces ONE
+      placeholder with ONE embed and removes consecutive duplicates,
+      so N images = N×3 placeholders is exactly right.
     - qwen + image: leave the user turn text-only and let qwen3-vl /
       qwen35 tokenize inject <|vision_start|><|image_pad|><|vision_end|>
-      itself. Embedding <|vision_start|> here would falsely trigger
+      itself (qwen3vl.py:164-165 splits batch tensor into list,
+      qwen3vl.py:180-182 multiplies vision_block for multi-image).
+      Embedding <|vision_start|> here would falsely trigger
       qwen35.py:744's skip_template=True path.
     - gemma3 + image: leave text-only (gemma3 tokenizer's image-soft
       support is unverified; let upstream decide).
     """
     if family == "gemma4":
-        media = "<|image><|image|><image|>\n\n" if image is not None else ""
+        # Default images_count derives from `image` for backward compat with
+        # callers that don't pass it; explicit images_count takes precedence.
+        n = images_count if images_count is not None else (1 if image is not None else 0)
+        if n > 0:
+            # N×3 placeholders: each image replaces 3 consecutive
+            # <|image|> tokens with 1 embed (gemma4.py:1553-1565
+            # removes surplus consecutive placeholders automatically).
+            media = "<|image><|image|><image|>\n\n" * n
+        else:
+            media = ""
         return (
             f"<|turn>system\n{system}<turn|>\n"
             f"<|turn>user\n{media}{user_text}<turn|>\n"
@@ -138,10 +152,10 @@ def _format_chat(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _resolve_mode(mode: str, *, image, video, target_model: str) -> str:
+def _resolve_mode(mode: str, *, image, video, target_model: str, images=None) -> str:
     if mode != "auto":
         return mode
-    has_visual = image is not None or video is not None  # OR-combined
+    has_visual = image is not None or images is not None or video is not None
     if target_model == "Krea-2-Edit":
         return "I2V" if has_visual else "T2I"
     if target_model in ("Z-Image", "Krea-2", "Phrase", "PhraseEN", "Flux"):
@@ -354,6 +368,11 @@ class PromptEnhancePlus(io.ComfyNode):
                 ),
                 io.Image.Input("image", optional=True, tooltip="Optional first-frame reference (I2V)."),
                 io.Image.Input(
+                    "images",
+                    optional=True,
+                    tooltip="Batch of reference images (B,H,W,C); uses model-native multi-image recognition. Takes precedence over `image` when connected.",
+                ),
+                io.Image.Input(
                     "video",
                     optional=True,
                     tooltip="Optional video frames as image batch (24 FPS assumed, subsampled to 1 FPS internally).",
@@ -449,6 +468,7 @@ class PromptEnhancePlus(io.ComfyNode):
         top_p,
         seed,
         image=None,
+        images=None,
         video=None,
         audio=None,
         custom_template="",
@@ -457,13 +477,17 @@ class PromptEnhancePlus(io.ComfyNode):
         repetition_penalty=1.0,
         presence_penalty=0.0,
     ) -> io.NodeOutput:
+        # Multi-image input takes precedence over single-image input.
+        effective_image = images if images is not None else image
+        images_count = int(images.shape[0]) if images is not None else (1 if image is not None else 0)
+
         custom_template = (custom_template or "").strip()
 
         if custom_template:
             system_prompt = custom_template
         else:
             effective_mode = _resolve_mode(
-                mode, image=image, video=video, target_model=target_model
+                mode, image=image, video=video, target_model=target_model, images=images
             )
             system_prompt = _BUILTIN_TEMPLATES.get((target_model, effective_mode))
             if system_prompt is None:
@@ -484,10 +508,10 @@ class PromptEnhancePlus(io.ComfyNode):
             or "Lumina" in _clip_class_name
             or "Qwen3_4B" in _clip_class_name
         )
-        if image is not None and _is_text_only_clip:
+        if effective_image is not None and _is_text_only_clip:
             raise ValueError(
                 f"Current CLIP ({_clip_class_name}) is a text-only encoder and "
-                f"ignores image input — your image will NOT influence the generated "
+                f"ignores image input — your image(s) will NOT influence the generated "
                 f"prompt. To enable image-conditioned expansion, load a "
                 f"vision-language CLIP such as Qwen2.5-VL-7B-Instruct or "
                 f"Qwen-Image-Edit (CLIPLoader type 'qwen_image' or 'qwen25_vl')."
@@ -504,20 +528,24 @@ class PromptEnhancePlus(io.ComfyNode):
         print(
             f"[PromptEnhancePlus] family={family} "
             f"image={'yes' if image is not None else 'no'} "
+            f"images={'yes' if images is not None else 'no'} "
+            f"images_batch={images.shape[0] if images is not None else 0} "
             f"video={'yes' if video is not None else 'no'} "
-            f"audio={'yes' if audio is not None else 'no'}"
+            f"audio={'yes' if audio is not None else 'no'} "
+            f"effective_image={'images' if images is not None else 'image' if image is not None else 'none'}"
         )
-        if image is not None:
+        if effective_image is not None:
             print(
-                f"[PromptEnhancePlus] image tensor: type={type(image).__name__} "
-                f"shape={getattr(image, 'shape', None)} "
-                f"dtype={getattr(image, 'dtype', None)} "
-                f"device={getattr(image, 'device', None)}"
+                f"[PromptEnhancePlus] image tensor: type={type(effective_image).__name__} "
+                f"shape={getattr(effective_image, 'shape', None)} "
+                f"dtype={getattr(effective_image, 'dtype', None)} "
+                f"device={getattr(effective_image, 'device', None)}"
             )
 
         formatted = _format_chat(
-            system_prompt, prompt, image, family,
+            system_prompt, prompt, effective_image, family,
             video=video, audio=audio, thinking=thinking,
+            images_count=images_count,
         )
         print(
             f"[PromptEnhancePlus] formatted_text_len={len(formatted)} chars; "
@@ -538,7 +566,7 @@ class PromptEnhancePlus(io.ComfyNode):
         )
         tokens = clip.tokenize(
             formatted,
-            image=image,
+            image=effective_image,
             skip_template=use_skip_template,
             min_length=1,
             video=video,
